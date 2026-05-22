@@ -1,10 +1,15 @@
 {
   "manifest_version": 3,
   "name": "TED Transcript Tracker",
-  "version": "1.0.0",
-  "description": "TED konuşmalarının transkriptlerini otomatik çek ve takip et",
+  "version": "1.1.0",
+  "description": "TED ve YouTube videolarının transkriptlerini çek ve takip et",
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
-  "host_permissions": ["https://www.ted.com/*", "https://ted.com/*"],
+  "host_permissions": [
+    "https://www.ted.com/*",
+    "https://ted.com/*",
+    "https://www.youtube.com/*",
+    "https://youtu.be/*"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -16,6 +21,11 @@
   "content_scripts": [
     {
       "matches": ["https://www.ted.com/talks/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.youtube.com/watch*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

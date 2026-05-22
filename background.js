@@ -29,16 +29,14 @@ const pending = {}; // tabId → { slug, attempts }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type !== 'FETCH_TRANSCRIPT_AUTO') return;
-  const { slug } = msg;
+  const { slug, url } = msg;
+  const openUrl = url || `https://www.ted.com/talks/${slug}/transcript`;
 
-  chrome.tabs.create(
-    { url: `https://www.ted.com/talks/${slug}/transcript`, active: false },
-    (tab) => {
-      pending[tab.id] = { slug, attempts: 0 };
-      sendResponse({ ok: true, tabId: tab.id });
-    }
-  );
-  return true; // async response
+  chrome.tabs.create({ url: openUrl, active: false }, (tab) => {
+    pending[tab.id] = { slug, attempts: 0 };
+    sendResponse({ ok: true, tabId: tab.id });
+  });
+  return true;
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {

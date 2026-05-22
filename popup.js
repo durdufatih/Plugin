@@ -79,6 +79,27 @@ function parseTedSlug(raw) {
   } catch { return null; }
 }
 
+// YouTube video ID çıkarma — youtu.be ve youtube.com/watch?v= destekler
+function parseYouTubeId(raw) {
+  let url = raw.trim();
+  if (!url.startsWith('http')) url = 'https://' + url;
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('/')[0] || null;
+    if (u.hostname.endsWith('youtube.com')) return u.searchParams.get('v') || null;
+    return null;
+  } catch { return null; }
+}
+
+// Hem TED hem YouTube için: {id, openUrl, type}
+function parseVideoUrl(raw) {
+  const tedSlug = parseTedSlug(raw);
+  if (tedSlug) return { id: tedSlug, type: 'ted', openUrl: `https://www.ted.com/talks/${tedSlug}/transcript` };
+  const ytId = parseYouTubeId(raw);
+  if (ytId) return { id: `yt_${ytId}`, type: 'youtube', openUrl: `https://www.youtube.com/watch?v=${ytId}` };
+  return null;
+}
+
 
 // ── Fetch status ──────────────────────────────────────────────────────────────
 
@@ -1506,39 +1527,40 @@ $('url-input').addEventListener('paste', () => setTimeout(fetchFromUrl, 50));
 async function fetchFromUrl() {
   const raw = $('url-input').value.trim();
   if (!raw) return;
-  const slug = parseTedSlug(raw);
-  if (!slug) { setFetchStatus('Geçerli bir TED linki değil.', 'error'); return; }
-  if (allTalks[slug]) { setFetchStatus('Bu konuşma zaten kayıtlı.', 'info'); showDetail(slug); return; }
+  const info = parseVideoUrl(raw);
+  if (!info) { setFetchStatus('Geçerli bir TED veya YouTube linki değil.', 'error'); return; }
+  const { id, type, openUrl } = info;
+  if (allTalks[id]) { setFetchStatus('Bu video zaten kayıtlı.', 'info'); showDetail(id); return; }
 
   $('btn-fetch-url').disabled = true;
-  setFetchStatus('⏳ Transkript sayfası açılıyor, otomatik çekiliyor…', 'info');
+  setFetchStatus('⏳ Transkript çekiliyor…', 'info');
 
-  // Önce aktif sekme doğru TED sayfasında mı (hem /talks/SLUG hem /transcript kabul)
+  // Aktif sekme bu video mu?
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     const tab = tabs[0];
-    const tabSlug = tab && tab.url ? parseTedSlug(tab.url) : null;
+    let tabMatchesVideo = false;
+    if (tab?.url) {
+      if (type === 'ted') tabMatchesVideo = parseTedSlug(tab.url) === parseTedSlug(raw);
+      if (type === 'youtube') tabMatchesVideo = parseYouTubeId(tab.url) === parseYouTubeId(raw);
+    }
 
-    if (tabSlug && tabSlug === slug) {
-      // Aktif sekme zaten doğru konuşma — content script'ten direkt çek
+    if (tabMatchesVideo) {
       chrome.tabs.sendMessage(tab.id, { type: 'GET_TRANSCRIPT' }, response => {
         if (chrome.runtime.lastError || !response?.ok) {
-          // Aktif sekme başarısız → arka plan sekmesiyle otomatik dene
-          autoFetchViaBackground(slug);
+          autoFetchViaBackground(id, openUrl);
           return;
         }
-        saveFetchedTalk(slug, response.transcript, response.meta);
+        saveFetchedTalk(id, response.transcript, response.meta);
       });
     } else {
-      // Arka plan sekmesiyle otomatik çek
-      autoFetchViaBackground(slug);
+      autoFetchViaBackground(id, openUrl);
     }
   });
 }
 
-function autoFetchViaBackground(slug) {
-  // background.js'e mesaj gönder — /transcript URL'sini arka planda açsın
-  chrome.runtime.sendMessage({ type: 'FETCH_TRANSCRIPT_AUTO', slug }, () => {
-    setFetchStatus('⏳ /transcript sayfası arka planda açıldı, çekiliyor…', 'info');
+function autoFetchViaBackground(id, openUrl) {
+  chrome.runtime.sendMessage({ type: 'FETCH_TRANSCRIPT_AUTO', slug: id, url: openUrl }, () => {
+    setFetchStatus('⏳ Sayfa arka planda açıldı, transkript çekiliyor…', 'info');
   });
 
   // storage.onChanged ile sonucu bekle
