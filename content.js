@@ -90,6 +90,7 @@
           savedAt: new Date().toISOString(),
           progress: 0,
           notes: '',
+          studyList: {},
         };
 
         chrome.storage.local.get(['talks'], (data) => {

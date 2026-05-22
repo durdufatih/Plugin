@@ -2,61 +2,53 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TED Transcript Tracker</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
+
   <header>
     <div class="logo">🎤 TED Transcript Tracker</div>
     <span id="talk-count" class="badge">0</span>
   </header>
 
-  <!-- Ana liste görünümü -->
+  <!-- ===== GÖRÜNÜM 1: Liste ===== -->
   <div id="view-list">
-    <!-- URL ile ekleme -->
     <div class="url-add-section">
       <div class="url-row">
-        <input
-          id="url-input"
-          type="text"
-          placeholder="TED linkini buraya yapıştır…"
-          spellcheck="false"
-        />
+        <input id="url-input" type="text" placeholder="TED linkini buraya yapıştır…" spellcheck="false" />
         <button id="btn-fetch-url" class="btn-fetch">Çek</button>
       </div>
       <div id="fetch-status" class="fetch-status hidden"></div>
     </div>
-
     <div id="empty-state" class="empty-state hidden">
       <p>Henüz kaydedilmiş konuşma yok.</p>
-      <p class="hint">Yukarıya bir TED linki yapıştırın veya bir TED sayfasında <strong>"📋 Transkripti Kaydet"</strong> butonuna basın.</p>
+      <p class="hint">Bir TED linki yapıştırın veya TED sayfasında <strong>📋 Transkripti Kaydet</strong> butonuna basın.</p>
     </div>
     <div id="talks-list"></div>
   </div>
 
-  <!-- Transkript görüntüleme -->
+  <!-- ===== GÖRÜNÜM 2: Detay (sekmeli) ===== -->
   <div id="view-detail" class="hidden">
-    <button id="btn-back" class="btn-back">← Geri</button>
-    <h2 id="detail-title"></h2>
-    <div class="detail-meta">
-      <a id="detail-url" href="#" target="_blank">TED'de Aç ↗</a>
-      <span id="detail-date"></span>
+    <div class="detail-header">
+      <button id="btn-back" class="btn-back">← Geri</button>
+      <h2 id="detail-title"></h2>
+      <div class="detail-meta">
+        <a id="detail-url" href="#" target="_blank">TED'de Aç ↗</a>
+        <span id="detail-date"></span>
+      </div>
     </div>
 
-    <div class="progress-section">
-      <label>İlerleme: <span id="progress-val">0</span>%</label>
-      <input type="range" id="progress-slider" min="0" max="100" value="0" />
+    <!-- Sekmeler -->
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="tab-transcript">📄 Transkript</button>
+      <button class="tab-btn" data-tab="tab-vocab">📚 Kelimeler</button>
+      <button class="tab-btn" data-tab="tab-flashcards">🃏 Flashcard</button>
+      <button class="tab-btn" data-tab="tab-progress">📈 İlerleme</button>
     </div>
 
-    <div class="notes-section">
-      <label>Notlarım:</label>
-      <textarea id="notes-area" placeholder="Bu konuşmayla ilgili notlarınızı buraya yazın..."></textarea>
-      <button id="btn-save-notes" class="btn-primary">Notları Kaydet</button>
-    </div>
-
-    <div class="transcript-section">
-      <h3>Transkript</h3>
+    <!-- Sekme: Transkript -->
+    <div id="tab-transcript" class="tab-panel">
       <div class="transcript-toolbar">
         <button id="btn-copy" class="btn-secondary">📋 Kopyala</button>
         <button id="btn-export" class="btn-secondary">💾 TXT İndir</button>
@@ -64,8 +56,73 @@
       </div>
       <div id="transcript-text"></div>
     </div>
+
+    <!-- Sekme: Kelimeler -->
+    <div id="tab-vocab" class="tab-panel hidden">
+      <div class="vocab-legend" id="vocab-legend"></div>
+      <div class="vocab-filter">
+        <span class="filter-label">Seviye filtrele:</span>
+        <label><input type="checkbox" class="lv-chk" value="A1" checked> A1</label>
+        <label><input type="checkbox" class="lv-chk" value="A2" checked> A2</label>
+        <label><input type="checkbox" class="lv-chk" value="B1" checked> B1</label>
+        <label><input type="checkbox" class="lv-chk" value="B2" checked> B2</label>
+        <label><input type="checkbox" class="lv-chk" value="C1" checked> C1+</label>
+      </div>
+      <p class="vocab-hint">Kelimelere tıklayarak çalışma listenize ekleyin.</p>
+      <div id="vocab-text"></div>
+
+      <div class="study-list-section">
+        <h4>Çalışma Listem (<span id="study-count">0</span>)</h4>
+        <div id="study-words"></div>
+        <button id="btn-clear-study" class="btn-secondary btn-sm hidden">Listeyi Temizle</button>
+      </div>
+    </div>
+
+    <!-- Sekme: Flashcardlar -->
+    <div id="tab-flashcards" class="tab-panel hidden">
+      <div id="fc-empty" class="empty-state">
+        <p>Flashcard için önce Kelimeler sekmesinden kelime ekleyin.</p>
+      </div>
+      <div id="fc-container" class="hidden">
+        <div class="fc-progress-line">
+          <span id="fc-idx">1</span> / <span id="fc-total">0</span>
+          &nbsp;·&nbsp; <span id="fc-correct">0</span> ✅ <span id="fc-wrong">0</span> ❌
+        </div>
+        <div id="fc-card" class="fc-card">
+          <div class="fc-front">
+            <span id="fc-word"></span>
+            <span id="fc-level-badge" class="fc-level-badge"></span>
+          </div>
+          <div id="fc-back" class="fc-back hidden">
+            <div id="fc-context"></div>
+            <div id="fc-definition" class="fc-definition"></div>
+          </div>
+          <button id="btn-flip" class="btn-flip">Çevir 👆</button>
+        </div>
+        <div id="fc-actions" class="fc-actions hidden">
+          <button id="btn-fc-wrong" class="btn-fc-wrong">❌ Bilmedim</button>
+          <button id="btn-fc-correct" class="btn-fc-correct">✅ Bildim</button>
+        </div>
+        <button id="btn-fc-reset" class="btn-secondary btn-sm">Yeniden Başla</button>
+      </div>
+    </div>
+
+    <!-- Sekme: İlerleme -->
+    <div id="tab-progress" class="tab-panel hidden">
+      <div class="progress-section">
+        <label>Okuma İlerlemesi: <strong><span id="progress-val">0</span>%</strong></label>
+        <input type="range" id="progress-slider" min="0" max="100" value="0" />
+      </div>
+      <div class="notes-section">
+        <label>Notlarım:</label>
+        <textarea id="notes-area" placeholder="Bu konuşmayla ilgili notlarınızı buraya yazın..."></textarea>
+        <button id="btn-save-notes" class="btn-primary">Notları Kaydet</button>
+      </div>
+      <div class="stats-section" id="vocab-stats"></div>
+    </div>
   </div>
 
+  <script src="cefr_words.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
