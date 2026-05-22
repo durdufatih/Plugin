@@ -131,6 +131,28 @@
 
   // Yöntem 2: Sayfada görünen DOM elemanları
   function extractFromDom() {
+    // ── Yeni TED oynatıcısı (2024): altta açılan transkript paneli ──
+    // <div class="fixed bottom-0 ..."> → <div role="button" class="inline ..."> → <span dir="ltr">
+    const panel = document.querySelector(
+      '.fixed.bottom-0.left-0, [class*="fixed"][class*="bottom-0"]'
+    );
+    if (panel) {
+      const spans = [...panel.querySelectorAll('span[dir="ltr"]')]
+        .filter(s => s.textContent.trim().length > 10 && !s.closest('button'));
+      if (spans.length >= 3) {
+        return spans.map(s => s.textContent.replace(/\s+/g, ' ').trim())
+          .filter(Boolean).join(' ');
+      }
+    }
+
+    // aria-label yaklaşımı (yukarıdaki span çalışmazsa)
+    const cueDivs = [...document.querySelectorAll('div[role="button"][aria-label].inline')]
+      .filter(el => (el.getAttribute('aria-label') || '').length > 15);
+    if (cueDivs.length >= 3) {
+      return cueDivs.map(el => el.getAttribute('aria-label').trim()).join(' ');
+    }
+
+    // ── Eski TED yapıları ──
     const selectors = [
       '[data-testid="transcript-line"]',
       '[data-testid="transcript-paragraph"]',
@@ -148,12 +170,23 @@
 
   // Yöntem 3: "Transcript" sekmesine tıkla, yüklenmesini bekle
   async function triggerTranscriptTab() {
+    // Önce transcript paneli zaten görünür mü diye tekrar kontrol et (daha uzun bekleyerek)
+    for (let i = 0; i < 10; i++) {
+      await delay(400);
+      const text = extractFromDom();
+      if (text) return text;
+    }
+
+    // Transcript butonunu bul ve tıkla
     const triggerEls = [...document.querySelectorAll('button,[role="tab"],[role="button"]')]
-      .filter(el => /transcript/i.test(el.textContent || el.getAttribute('aria-label') || ''));
+      .filter(el => {
+        const txt = (el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
+        return txt.includes('transcript') && !txt.includes('cefr');
+      });
     if (!triggerEls.length) return null;
     triggerEls[0].click();
-    for (let i = 0; i < 15; i++) {
-      await delay(300);
+    for (let i = 0; i < 20; i++) {
+      await delay(400);
       const text = extractFromDom();
       if (text) return text;
     }
