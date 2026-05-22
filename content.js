@@ -4,6 +4,50 @@
 
   if (document.getElementById('ted-tracker-btn')) return;
 
+  // ── Altyazı gizleme butonu ─────────────────────────────────────────────────
+  let subsHidden = false;
+  const subStyleId = 'ted-sub-hide-style';
+
+  function injectSubtitleToggle() {
+    if (document.getElementById('ted-sub-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'ted-sub-btn';
+    btn.textContent = '👁 Altyazı: AÇIK';
+    btn.style.cssText = `
+      position: fixed; bottom: 72px; right: 24px; z-index: 999999;
+      background: #1a1a1a; color: #fff; border: none; border-radius: 8px;
+      padding: 9px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,.35); transition: background .15s;
+    `;
+    btn.addEventListener('click', () => {
+      subsHidden = !subsHidden;
+      // 1. Video text tracks
+      const video = document.querySelector('video');
+      if (video) {
+        [...video.textTracks].forEach(t => { t.mode = subsHidden ? 'hidden' : 'showing'; });
+      }
+      // 2. CSS overlay approach (covers multiple TED player versions)
+      let styleEl = document.getElementById(subStyleId);
+      if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = subStyleId;
+        document.head.appendChild(styleEl);
+      }
+      styleEl.textContent = subsHidden ? `
+        [class*="subtitle"], [class*="caption"], [class*="transcript-overlay"],
+        [class*="tjs-"], [data-testid*="caption"], [data-testid*="subtitle"],
+        .tlc, .tls, [class*="PlayerSubtitle"], [class*="player-subtitle"] {
+          display: none !important;
+          visibility: hidden !important;
+        }` : '';
+      btn.textContent = subsHidden ? '👁 Altyazı: KAPALI' : '👁 Altyazı: AÇIK';
+      btn.style.background = subsHidden ? '#e62b1e' : '#1a1a1a';
+    });
+    document.body.appendChild(btn);
+  }
+
+  injectSubtitleToggle();
+
   function getVideoMeta() {
     const titleEl =
       document.querySelector('h1[data-testid="talk-title"]') ||

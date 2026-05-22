@@ -20,6 +20,8 @@ const SHORT_THRESHOLD = WORDS_PER_CHUNK;
 const PASSIVE_SESSIONS = 3;
 const ACTIVE_SESSIONS = 5;
 const DICTATION_SESSIONS = 3;
+const MASTERY_THRESHOLD = 70; // % to unlock mastery tab
+const MASTERY_SESSIONS = 2;
 const MAX_BLANKS = 12;
 const MIN_BLANKS = 4;
 const BLANK_RATIO = 0.22;
@@ -46,6 +48,9 @@ let alState = null;
 
 // Dictation in-memory state
 let dictState = null;
+
+// Mastery exercise in-memory state
+let masteryState = null;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -308,9 +313,10 @@ function renderChunkListening(container, ld) {
 
 function chunkFullyDone(chunk) {
   const p = sessionsDone(chunk.passive) >= PASSIVE_SESSIONS;
-  const a = chunk.active ? chunk.active.sessions.filter(s => s.done).length >= ACTIVE_SESSIONS : false;
+  const a = chunk.active   ? chunk.active.sessions.filter(s => s.done).length >= ACTIVE_SESSIONS : false;
   const d = chunk.dictation ? chunk.dictation.sessions.filter(s => s.done).length >= DICTATION_SESSIONS : false;
-  return p && a && d;
+  const m = chunk.mastery  ? chunk.mastery.sessions.filter(s => s.done).length >= MASTERY_SESSIONS : false;
+  return p && a && d && m;
 }
 
 // ── Chunk block ───────────────────────────────────────────────────────────────
@@ -319,7 +325,9 @@ function renderChunkBlock(chunk, ci) {
   const pDone = sessionsDone(chunk.passive);
   const aDone = chunk.active ? chunk.active.sessions.filter(s => s.done).length : 0;
   const dDone = chunk.dictation ? chunk.dictation.sessions.filter(s => s.done).length : 0;
-  const done = chunkFullyDone(chunk);
+  const mDone = chunk.mastery ? chunk.mastery.sessions.filter(s => s.done).length : 0;
+  const pct   = chunkProgressPct(chunk);
+  const done  = chunkFullyDone(chunk);
 
   const block = document.createElement('div');
   block.className = `chunk-block ${done ? 'chunk-done' : ''}`;
@@ -333,6 +341,9 @@ function renderChunkBlock(chunk, ci) {
       <span class="pill ${pDone >= PASSIVE_SESSIONS ? 'pill-done' : ''}">P ${pDone}/${PASSIVE_SESSIONS}</span>
       <span class="pill ${aDone >= ACTIVE_SESSIONS ? 'pill-done' : ''}">A ${aDone}/${ACTIVE_SESSIONS}</span>
       <span class="pill ${dDone >= DICTATION_SESSIONS ? 'pill-done' : ''}">D ${dDone}/${DICTATION_SESSIONS}</span>
+      ${pct >= MASTERY_THRESHOLD
+        ? `<span class="pill ${mDone >= MASTERY_SESSIONS ? 'pill-done' : 'pill-mastery'}">🏆 ${mDone}/${MASTERY_SESSIONS}</span>`
+        : `<span class="pill pill-locked">🔒 %${pct}</span>`}
     </div>
     <button class="chunk-toggle btn-link">▼</button>`;
 
@@ -361,11 +372,13 @@ function renderChunkStudy(container, chunk, ci) {
 
   const tabBar = document.createElement('div');
   tabBar.className = 'chunk-tabs';
+  const pct = chunkProgressPct(chunk);
   const subTabs = [
     { key: 'vocab',     label: '📚 Kelimeler' },
     { key: 'passive',   label: '🔈 Pasif' },
     { key: 'active',    label: '✍️ Aktif' },
     { key: 'dictation', label: '🎤 Dikte' },
+    { key: 'mastery',   label: `🏆${pct >= MASTERY_THRESHOLD ? '' : ' 🔒'}` },
   ];
 
   const contentArea = document.createElement('div');
@@ -395,6 +408,7 @@ function renderChunkTabContent(container, chunk, ci, tab) {
   if (tab === 'passive')   renderChunkPassive(container, chunk, ci);
   if (tab === 'active')    renderChunkActive(container, chunk, ci);
   if (tab === 'dictation') renderChunkDictation(container, chunk, ci);
+  if (tab === 'mastery')   renderChunkMastery(container, chunk, ci);
 }
 
 // ── Chunk: Vocabulary ─────────────────────────────────────────────────────────
@@ -869,6 +883,368 @@ function showDictationResult(container, chunk, ci) {
       done: true, score: correctWords, total: totalWords,
     };
     dictState = null;
+    chrome.storage.local.set({ talks: allTalks }, buildListeningView);
+  });
+}
+
+// ── Mastery ───────────────────────────────────────────────────────────────────
+
+function chunkProgressPct(chunk) {
+  const pDone = sessionsDone(chunk.passive);
+  const aDone = chunk.active ? chunk.active.sessions.filter(s => s.done).length : 0;
+  const dDone = chunk.dictation ? chunk.dictation.sessions.filter(s => s.done).length : 0;
+  const total = PASSIVE_SESSIONS + ACTIVE_SESSIONS + DICTATION_SESSIONS;
+  return Math.round((pDone + aDone + dDone) / total * 100);
+}
+
+// Build word-selection question for one sentence:
+// blanks 1-2 key content words, provide 4 options each.
+function buildWordSelQuestion(sentence, allChunkWords) {
+  const tokenRe = /([a-zA-Z']{4,})|([^a-zA-Z']+|[a-zA-Z']{1,3})/g;
+  const tokens = [];
+  let m;
+  while ((m = tokenRe.exec(sentence)) !== null) {
+    const isContent = !!m[1] && !STOP_WORDS_SET.has(m[1].toLowerCase());
+    tokens.push({ text: m[0], lower: m[1] ? m[1].toLowerCase() : null, isContent });
+  }
+  const contentIdxs = tokens.map((t, i) => t.isContent ? i : -1).filter(i => i >= 0);
+  if (contentIdxs.length < 2) return null;
+
+  // Pick 1-2 words to blank (prioritise middle of sentence)
+  const mid = Math.floor(contentIdxs.length / 2);
+  const picks = contentIdxs.length >= 4
+    ? [contentIdxs[mid - 1], contentIdxs[mid + 1]]
+    : [contentIdxs[mid]];
+
+  const blanks = picks.map(idx => {
+    const word = tokens[idx].lower;
+    const pool = allChunkWords.filter(w => w !== word);
+    const opts = [word, ...[...pool].sort(() => Math.random() - 0.5).slice(0, 3)]
+      .sort(() => Math.random() - 0.5);
+    return { tokenIdx: idx, word, opts };
+  });
+
+  return { tokens, blanks };
+}
+
+// Build sentence-completion question: show first ~40% of words, user types rest.
+function buildSentCompQuestion(sentence) {
+  const words = sentence.trim().split(/\s+/);
+  const cutoff = Math.max(2, Math.floor(words.length * 0.4));
+  return {
+    prefix: words.slice(0, cutoff).join(' '),
+    suffix: words.slice(cutoff).join(' '),
+    full: sentence,
+  };
+}
+
+function initChunkMastery(chunk) {
+  if (chunk.mastery) return;
+  const sentences = splitSentences(chunk.text);
+  const allWords = [...new Set(
+    (chunk.text.match(/[a-zA-Z']{4,}/g) || []).map(w => w.toLowerCase())
+      .filter(w => !STOP_WORDS_SET.has(w))
+  )];
+
+  chunk.mastery = {
+    questions: sentences.map(sent => ({
+      sentence: sent,
+      wordSel: buildWordSelQuestion(sent, allWords),
+      sentComp: buildSentCompQuestion(sent),
+    })).filter(q => q.wordSel),
+    sessions: Array(MASTERY_SESSIONS).fill(null).map(() => ({
+      done: false, score: null, total: 0,
+    })),
+  };
+  chunk.mastery.sessions.forEach(s => { s.total = chunk.mastery.questions.length * 2; });
+  chrome.storage.local.set({ talks: allTalks });
+}
+
+function renderChunkMastery(container, chunk, ci) {
+  const pct = chunkProgressPct(chunk);
+  const locked = pct < MASTERY_THRESHOLD;
+
+  if (locked) {
+    container.innerHTML = `
+      <div class="mastery-locked">
+        <div class="mastery-lock-icon">🔒</div>
+        <div class="mastery-lock-msg">Ustalık modu için <strong>%${MASTERY_THRESHOLD}</strong> gerekli</div>
+        <div class="mastery-progress-wrap">
+          <div class="mastery-progress-fill" style="width:${pct}%"></div>
+        </div>
+        <div class="mastery-progress-txt">Şu an: %${pct}</div>
+      </div>`;
+    return;
+  }
+
+  initChunkMastery(chunk);
+  const { questions, sessions } = chunk.mastery;
+  const doneCount = sessions.filter(s => s.done).length;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'active-session-header';
+  hdr.innerHTML = `<span>Altyazısız çalışma &nbsp;·&nbsp; <strong>${doneCount}/${MASTERY_SESSIONS}</strong> seans tamamlandı</span>`;
+  container.appendChild(hdr);
+
+  // Sub-title reminder
+  const reminder = document.createElement('div');
+  reminder.className = 'mastery-subtitle-reminder';
+  reminder.innerHTML = `📺 TED sayfasında altyazıları kapatın — eklenti butonu: <strong>"👁 Altyazı: AÇIK"</strong>`;
+  container.appendChild(reminder);
+
+  const sessionRow = document.createElement('div');
+  sessionRow.className = 'active-session-row';
+  sessions.forEach((sess, si) => {
+    const isActive = masteryState && masteryState.chunkIdx === ci && masteryState.sessionIdx === si;
+    const pill = document.createElement('button');
+    pill.className = `session-pill ${sess.done ? 'pill-sess-done' : ''} ${isActive ? 'pill-sess-active' : ''}`;
+    pill.textContent = sess.done ? `✅ %${Math.round(sess.score / sess.total * 100)}` : `${si + 1}. Seans`;
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      masteryState = {
+        slug: currentSlug, chunkIdx: ci, sessionIdx: si,
+        questions,
+        currentQ: 0,
+        step: 'wordSel', // 'wordSel' → 'sentComp' → next question
+        wsAnswers: {},    // blankIdx → chosen word (for current question)
+        scInput: '',
+        scChecked: false,
+        scores: [],       // { ws: {c,t}, sc: {c,t} } per question
+        complete: false,
+      };
+      refreshMasteryTab(chunk, ci);
+    });
+    sessionRow.appendChild(pill);
+  });
+  container.appendChild(sessionRow);
+
+  const exArea = document.createElement('div');
+  exArea.className = 'active-exercise-area';
+  container.appendChild(exArea);
+
+  if (masteryState && masteryState.chunkIdx === ci) {
+    renderMasteryExercise(exArea, chunk, ci);
+  } else {
+    exArea.innerHTML = `<p class="active-start-hint">Bir seans seçin. Transkript görünmeyecek.</p>`;
+  }
+}
+
+function refreshMasteryTab(chunk, ci) {
+  const body = document.getElementById(`chunk-body-${ci}`);
+  if (body) renderChunkTabContent(body.querySelector('.chunk-tab-content'), chunk, ci, 'mastery');
+}
+
+function renderMasteryExercise(container, chunk, ci) {
+  if (!masteryState) return;
+  const { questions, currentQ, step, complete } = masteryState;
+  container.innerHTML = '';
+
+  if (complete) { showMasteryResult(container, chunk, ci); return; }
+
+  const q = questions[currentQ];
+  const total = questions.length;
+
+  // Progress
+  const prog = document.createElement('div');
+  prog.className = 'dict-progress';
+  prog.innerHTML = `
+    <span>Soru <strong>${currentQ + 1}</strong>/${total} &nbsp;·&nbsp; ${step === 'wordSel' ? '📝 Kelime Seçimi' : '✏️ Cümle Tamamlama'}</span>
+    <div class="dict-prog-bar">
+      <div class="dict-prog-fill" style="width:${Math.round(currentQ / total * 100)}%"></div>
+    </div>`;
+  container.appendChild(prog);
+
+  if (step === 'wordSel') {
+    renderMasteryWordSel(container, q, chunk, ci);
+  } else {
+    renderMasterySentComp(container, q, chunk, ci);
+  }
+}
+
+// ── Mastery: Word Selection ───────────────────────────────────────────────────
+
+function renderMasteryWordSel(container, q, chunk, ci) {
+  const { tokens, blanks } = q.wordSel;
+  const { wsAnswers } = masteryState;
+  const allAnswered = blanks.every((_, bi) => wsAnswers[bi] != null);
+
+  // Render sentence with blanks (no transcript reference)
+  const sentDiv = document.createElement('div');
+  sentDiv.className = 'mastery-sentence';
+  let focusedBlank = blanks.findIndex((_, bi) => wsAnswers[bi] == null);
+  if (focusedBlank === -1) focusedBlank = blanks.length - 1;
+
+  tokens.forEach((tok, ti) => {
+    const blankIdx = blanks.findIndex(b => b.tokenIdx === ti);
+    if (blankIdx === -1) {
+      sentDiv.appendChild(document.createTextNode(tok.text));
+    } else {
+      const ans = wsAnswers[blankIdx];
+      const correct = ans === blanks[blankIdx].word;
+      const slot = document.createElement('span');
+      slot.className = `blank-slot ${blankIdx === focusedBlank ? 'blank-focused' : ''} ${ans ? (allAnswered ? (correct ? 'blank-correct' : 'blank-wrong') : 'blank-focused') : 'blank-empty'}`;
+      slot.textContent = ans || `[${blankIdx + 1}]`;
+      slot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!wsAnswers[blankIdx]) {
+          focusedBlank = blankIdx;
+          renderMasteryWordSel(container, q, chunk, ci);
+        }
+      });
+      sentDiv.appendChild(slot);
+    }
+  });
+  container.appendChild(sentDiv);
+
+  if (allAnswered) {
+    // Show result and next step button
+    const correct = blanks.filter((b, bi) => wsAnswers[bi] === b.word).length;
+    const scoreDiv = document.createElement('div');
+    scoreDiv.className = 'dict-sentence-score';
+    scoreDiv.textContent = `${correct}/${blanks.length} doğru`;
+    container.appendChild(scoreDiv);
+
+    const btnNext = document.createElement('button');
+    btnNext.className = 'btn-primary';
+    btnNext.textContent = 'Cümle Tamamlamaya Geç →';
+    btnNext.addEventListener('click', (e) => {
+      e.stopPropagation();
+      masteryState.scores.push({ ws: { c: correct, t: blanks.length }, sc: null });
+      masteryState.step = 'sentComp';
+      masteryState.scInput = '';
+      masteryState.scChecked = false;
+      refreshMasteryTab(chunk, ci);
+    });
+    container.appendChild(btnNext);
+    return;
+  }
+
+  // Options for focused blank
+  const currBlank = blanks[focusedBlank];
+  const bank = document.createElement('div');
+  bank.className = 'word-bank';
+  bank.innerHTML = `<div class="word-bank-label">Boşluk [${focusedBlank + 1}] için seçin:</div>`;
+  const opts = document.createElement('div');
+  opts.className = 'word-bank-options';
+  currBlank.opts.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'word-bank-btn';
+    btn.textContent = opt;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      masteryState.wsAnswers[focusedBlank] = opt;
+      // advance focus
+      const next = blanks.findIndex((_, bi) => bi > focusedBlank && masteryState.wsAnswers[bi] == null);
+      if (next !== -1) focusedBlank = next;
+      renderMasteryWordSel(container, q, chunk, ci);
+    });
+    opts.appendChild(btn);
+  });
+  bank.appendChild(opts);
+  container.appendChild(bank);
+}
+
+// ── Mastery: Sentence Completion ─────────────────────────────────────────────
+
+function renderMasterySentComp(container, q, chunk, ci) {
+  const { sentComp } = q;
+  const { scInput, scChecked, currentQ, questions } = masteryState;
+
+  const prefixDiv = document.createElement('div');
+  prefixDiv.className = 'mastery-sentence mastery-prefix';
+  prefixDiv.innerHTML = `<span class="prefix-text">${escHtml(sentComp.prefix)}</span><span class="prefix-cursor">…</span>`;
+  container.appendChild(prefixDiv);
+
+  if (scChecked) {
+    const result = compareWords(sentComp.suffix, scInput);
+    const resultDiv = document.createElement('div');
+    resultDiv.className = 'dict-result';
+    resultDiv.append(...result.results.map(r => {
+      const span = document.createElement('span');
+      span.className = `dict-word ${r.correct ? 'dict-ok' : 'dict-fail'}`;
+      span.textContent = r.original;
+      if (!r.correct) span.title = r.user ? `Yazdınız: "${r.user}"` : '(boş)';
+      return span;
+    }));
+    container.appendChild(resultDiv);
+
+    const scoreDiv = document.createElement('div');
+    scoreDiv.className = 'dict-sentence-score';
+    scoreDiv.textContent = `${result.pct}% doğru (${result.correct}/${result.total} kelime)`;
+    container.appendChild(scoreDiv);
+
+    // Update score record
+    const scoreEntry = masteryState.scores[masteryState.scores.length - 1];
+    if (scoreEntry && !scoreEntry.sc) scoreEntry.sc = { c: result.correct, t: result.total };
+
+    const isLast = currentQ >= questions.length - 1;
+    const btnNext = document.createElement('button');
+    btnNext.className = 'btn-primary';
+    btnNext.textContent = isLast ? 'Seansı Bitir ✓' : 'Sonraki Soru →';
+    btnNext.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isLast) {
+        masteryState.complete = true;
+      } else {
+        masteryState.currentQ++;
+        masteryState.step = 'wordSel';
+        masteryState.wsAnswers = {};
+        masteryState.scInput = '';
+        masteryState.scChecked = false;
+      }
+      refreshMasteryTab(chunk, ci);
+    });
+    container.appendChild(btnNext);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'dict-textarea';
+  textarea.placeholder = 'Cümlenin devamını yazın…';
+  textarea.value = scInput;
+  textarea.addEventListener('input', () => { masteryState.scInput = textarea.value; });
+  container.appendChild(textarea);
+
+  const btnCheck = document.createElement('button');
+  btnCheck.className = 'btn-primary';
+  btnCheck.textContent = 'Kontrol Et';
+  btnCheck.addEventListener('click', (e) => {
+    e.stopPropagation();
+    masteryState.scInput = textarea.value.trim();
+    masteryState.scChecked = true;
+    refreshMasteryTab(chunk, ci);
+  });
+  container.appendChild(btnCheck);
+}
+
+function showMasteryResult(container, chunk, ci) {
+  const { scores, sessionIdx } = masteryState;
+  let wsC = 0, wsT = 0, scC = 0, scT = 0;
+  scores.forEach(s => {
+    if (s.ws) { wsC += s.ws.c; wsT += s.ws.t; }
+    if (s.sc) { scC += s.sc.c; scT += s.sc.t; }
+  });
+  const total = wsT + scT;
+  const correct = wsC + scC;
+  const pct = total > 0 ? Math.round(correct / total * 100) : 0;
+
+  const result = document.createElement('div');
+  result.className = 'active-result';
+  result.innerHTML = `
+    <div class="result-score">
+      <span class="score-big">${pct}%</span>
+      <span class="score-sub">${correct}/${total} doğru &nbsp;·&nbsp; Kelime: %${wsT ? Math.round(wsC/wsT*100) : 0} &nbsp;·&nbsp; Cümle: %${scT ? Math.round(scC/scT*100) : 0}</span>
+    </div>
+    ${pct >= 90 ? '<div class="result-perfect">Harika! Altyazısız ustalık seviyesi 🏆</div>' : ''}
+    <button class="btn-primary btn-complete-session">Seansı Kaydet</button>`;
+  container.appendChild(result);
+
+  result.querySelector('.btn-complete-session').addEventListener('click', (e) => {
+    e.stopPropagation();
+    allTalks[currentSlug].listening.chunks[ci].mastery.sessions[sessionIdx] = {
+      done: true, score: correct, total,
+    };
+    masteryState = null;
     chrome.storage.local.set({ talks: allTalks }, buildListeningView);
   });
 }

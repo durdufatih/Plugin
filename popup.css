@@ -457,6 +457,43 @@ header {
   margin-top: 4px;
 }
 
+/* ── Mastery tab ── */
+.mastery-locked {
+  text-align: center;
+  padding: 18px 12px;
+  background: #fafafa;
+  border: 1.5px dashed #ddd;
+  border-radius: 8px;
+}
+.mastery-lock-icon { font-size: 24px; margin-bottom: 6px; }
+.mastery-lock-msg  { font-size: 12px; color: #555; margin-bottom: 10px; }
+.mastery-progress-wrap {
+  height: 6px; background: #eee; border-radius: 3px;
+  overflow: hidden; margin: 0 20px 4px;
+}
+.mastery-progress-fill { height: 100%; background: #e62b1e; border-radius: 3px; transition: width .3s; }
+.mastery-progress-txt  { font-size: 11px; color: #aaa; }
+
+.mastery-subtitle-reminder {
+  font-size: 11px; color: #777;
+  background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: 6px; padding: 6px 10px;
+  margin-bottom: 8px; line-height: 1.5;
+}
+
+.mastery-sentence {
+  font-size: 13px; line-height: 2;
+  background: #fff; border: 1px solid #e8e8e8;
+  border-radius: 6px; padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.mastery-prefix { color: #555; }
+.prefix-text { font-weight: 600; color: #1a1a1a; }
+.prefix-cursor { color: #e62b1e; font-weight: 700; font-size: 16px; margin-left: 2px; }
+
+.pill-mastery { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.pill-locked  { background: #f5f5f5; color: #aaa; border-color: #ddd; font-size: 9px; }
+
 
 .listen-header {
   display: flex;
