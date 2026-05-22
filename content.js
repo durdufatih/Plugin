@@ -59,12 +59,16 @@
       const pp = nd.props?.pageProps;
       if (!pp) return null;
 
-      // Bilinen yollar
+      // Bilinen yollar (/talks/SLUG ve /talks/SLUG/transcript sayfalarını kapsar)
       const directPaths = [
         pp?.transcriptData?.paragraphs,
         pp?.videoData?.transcript?.paragraphs,
         pp?.talk?.transcript?.paragraphs,
         pp?.serverProps?.transcriptData?.paragraphs,
+        pp?.talkData?.transcript?.paragraphs,
+        pp?.initialData?.transcript?.paragraphs,
+        pp?.transcript?.paragraphs,
+        pp?.data?.transcript?.paragraphs,
       ];
       for (const arr of directPaths) {
         const text = paragraphsToText(arr);
@@ -100,71 +104,92 @@
     }
   }
 
+  // Bir paragraf dizisinden metin çıkarır.
+  // Desteklenen yapılar:
+  //   [{text:"..."}]                           — düz metin
+  //   [{cues:[{text:"..."},...]}]              — TED yeni format
+  //   [{cue:"..."}]                            — eski format
   function paragraphsToText(arr) {
-    if (!Array.isArray(arr) || arr.length < 3) return null;
-    const texts = arr.map(p => p.text || p.cue || p.transcript || '').filter(t => t.length > 5);
-    if (texts.length < 3) return null;
-    return texts.join('\n\n');
+    if (!Array.isArray(arr) || arr.length < 2) return null;
+
+    // Önce: her öğe doğrudan metin mi?
+    const directTexts = arr
+      .map(p => p.text || p.cue || p.transcript || p.value || '')
+      .filter(t => t.length > 5);
+    if (directTexts.length >= 2) return directTexts.join('\n\n');
+
+    // Sonra: her öğe içinde cues[] var mı? (TED'in baskın yapısı)
+    const hasCues = arr.some(p => Array.isArray(p.cues) && p.cues.length > 0);
+    if (hasCues) {
+      const cueTexts = arr
+        .flatMap(p => (p.cues || []).map(c => c.text || c.value || ''))
+        .filter(t => t.length > 3);
+      if (cueTexts.length >= 5) return cueTexts.join(' ');
+    }
+
+    return null;
   }
 
   function deepSearchParagraphs(obj, depth) {
-    if (depth > 7 || !obj || typeof obj !== 'object') return null;
-    if (Array.isArray(obj) && obj.length >= 5) {
+    if (depth > 8 || !obj || typeof obj !== 'object') return null;
+    if (Array.isArray(obj) && obj.length >= 3) {
       const sample = obj[0];
-      if (sample && typeof sample === 'object' && (sample.text || sample.cue)) {
-        const texts = obj.map(p => p.text || p.cue || '').filter(t => t.length > 10);
-        if (texts.length >= 5) return texts.join('\n\n');
+      if (sample && typeof sample === 'object') {
+        // Düz text/cue
+        if (sample.text || sample.cue || sample.value) {
+          const texts = obj.map(p => p.text || p.cue || p.value || '').filter(t => t.length > 5);
+          if (texts.length >= 3) return texts.join('\n\n');
+        }
+        // cues[] içeren paragraflar
+        if (Array.isArray(sample.cues) && sample.cues[0]?.text) {
+          const texts = obj.flatMap(p => (p.cues || []).map(c => c.text || '')).filter(t => t.length > 3);
+          if (texts.length >= 5) return texts.join(' ');
+        }
       }
     }
     // Öncelikli anahtarlar
-    for (const key of ['transcript', 'paragraphs', 'captions', 'cues', 'subtitles', 'translation']) {
+    for (const key of ['transcript', 'paragraphs', 'captions', 'cues', 'subtitles', 'translation', 'content']) {
       if (obj[key]) {
         const r = deepSearchParagraphs(obj[key], depth + 1);
         if (r) return r;
       }
     }
     for (const val of Object.values(obj)) {
-      const r = deepSearchParagraphs(val, depth + 1);
-      if (r) return r;
+      if (typeof val === 'object') {
+        const r = deepSearchParagraphs(val, depth + 1);
+        if (r) return r;
+      }
     }
     return null;
   }
 
   // Yöntem 2: Sayfada görünen DOM elemanları
   function extractFromDom() {
-    // ── Yeni TED oynatıcısı (2024): altta açılan transkript paneli ──
-    // <div class="fixed bottom-0 ..."> → <div role="button" class="inline ..."> → <span dir="ltr">
-    const panel = document.querySelector(
-      '.fixed.bottom-0.left-0, [class*="fixed"][class*="bottom-0"]'
-    );
-    if (panel) {
-      const spans = [...panel.querySelectorAll('span[dir="ltr"]')]
-        .filter(s => s.textContent.trim().length > 10 && !s.closest('button'));
-      if (spans.length >= 3) {
-        return spans.map(s => s.textContent.replace(/\s+/g, ' ').trim())
-          .filter(Boolean).join(' ');
-      }
+    // ── Tüm sayfadaki span[dir="ltr"] (buton içi hariç) ──
+    // Hem /transcript sayfasını hem de talk sayfasındaki paneli kapsar.
+    // Tüm sayfayı tarıyoruz — floating panele erken çıkış yapmıyoruz.
+    const allDirSpans = [...document.querySelectorAll('span[dir="ltr"]')]
+      .filter(s => s.textContent.trim().length > 8 && !s.closest('button'));
+    if (allDirSpans.length >= 5) {
+      return allDirSpans
+        .map(s => s.textContent.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .join(' ');
     }
 
-    // aria-label yaklaşımı (yukarıdaki span çalışmazsa)
-    const cueDivs = [...document.querySelectorAll('div[role="button"][aria-label].inline')]
-      .filter(el => (el.getAttribute('aria-label') || '').length > 15);
-    if (cueDivs.length >= 3) {
-      return cueDivs.map(el => el.getAttribute('aria-label').trim()).join(' ');
-    }
-
-    // ── /transcript sayfası: tüm inline cue divsları (panel dışındakiler de dahil) ──
+    // ── Tüm sayfadaki div[role="button"][aria-label] cue elemanları ──
     const allCueDivs = [...document.querySelectorAll('div[role="button"][aria-label]')]
-      .filter(el => (el.getAttribute('aria-label') || '').length > 15);
+      .filter(el => (el.getAttribute('aria-label') || '').length > 12);
     if (allCueDivs.length >= 5) {
       return allCueDivs.map(el => el.getAttribute('aria-label').trim()).join(' ');
     }
 
-    // Tüm span[dir="ltr"] (buton dışı)
-    const allDirSpans = [...document.querySelectorAll('span[dir="ltr"]')]
-      .filter(s => s.textContent.trim().length > 10 && !s.closest('button'));
-    if (allDirSpans.length >= 5) {
+    // Az cue var ama yine de deneyelim (kısa video)
+    if (allDirSpans.length >= 3) {
       return allDirSpans.map(s => s.textContent.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' ');
+    }
+    if (allCueDivs.length >= 3) {
+      return allCueDivs.map(el => el.getAttribute('aria-label').trim()).join(' ');
     }
 
     // ── Eski TED yapıları ──
