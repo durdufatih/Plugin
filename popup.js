@@ -19,6 +19,7 @@ const WORDS_PER_CHUNK = WPM * CHUNK_MINS;
 const SHORT_THRESHOLD = WORDS_PER_CHUNK;
 const PASSIVE_SESSIONS = 3;
 const ACTIVE_SESSIONS = 5;
+const DICTATION_SESSIONS = 3;
 const MAX_BLANKS = 12;
 const MIN_BLANKS = 4;
 const BLANK_RATIO = 0.22;
@@ -42,6 +43,9 @@ const chunkSubTab = {};
 
 // Active exercise in-memory state
 let alState = null;
+
+// Dictation in-memory state
+let dictState = null;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -305,7 +309,8 @@ function renderChunkListening(container, ld) {
 function chunkFullyDone(chunk) {
   const p = sessionsDone(chunk.passive) >= PASSIVE_SESSIONS;
   const a = chunk.active ? chunk.active.sessions.filter(s => s.done).length >= ACTIVE_SESSIONS : false;
-  return p && a;
+  const d = chunk.dictation ? chunk.dictation.sessions.filter(s => s.done).length >= DICTATION_SESSIONS : false;
+  return p && a && d;
 }
 
 // ── Chunk block ───────────────────────────────────────────────────────────────
@@ -313,7 +318,8 @@ function chunkFullyDone(chunk) {
 function renderChunkBlock(chunk, ci) {
   const pDone = sessionsDone(chunk.passive);
   const aDone = chunk.active ? chunk.active.sessions.filter(s => s.done).length : 0;
-  const done = pDone >= PASSIVE_SESSIONS && aDone >= ACTIVE_SESSIONS;
+  const dDone = chunk.dictation ? chunk.dictation.sessions.filter(s => s.done).length : 0;
+  const done = chunkFullyDone(chunk);
 
   const block = document.createElement('div');
   block.className = `chunk-block ${done ? 'chunk-done' : ''}`;
@@ -326,6 +332,7 @@ function renderChunkBlock(chunk, ci) {
     <div class="chunk-status-pills">
       <span class="pill ${pDone >= PASSIVE_SESSIONS ? 'pill-done' : ''}">P ${pDone}/${PASSIVE_SESSIONS}</span>
       <span class="pill ${aDone >= ACTIVE_SESSIONS ? 'pill-done' : ''}">A ${aDone}/${ACTIVE_SESSIONS}</span>
+      <span class="pill ${dDone >= DICTATION_SESSIONS ? 'pill-done' : ''}">D ${dDone}/${DICTATION_SESSIONS}</span>
     </div>
     <button class="chunk-toggle btn-link">▼</button>`;
 
@@ -355,9 +362,10 @@ function renderChunkStudy(container, chunk, ci) {
   const tabBar = document.createElement('div');
   tabBar.className = 'chunk-tabs';
   const subTabs = [
-    { key: 'vocab',   label: '📚 Kelimeler' },
-    { key: 'passive', label: '🔈 Pasif' },
-    { key: 'active',  label: '✍️ Aktif' },
+    { key: 'vocab',     label: '📚 Kelimeler' },
+    { key: 'passive',   label: '🔈 Pasif' },
+    { key: 'active',    label: '✍️ Aktif' },
+    { key: 'dictation', label: '🎤 Dikte' },
   ];
 
   const contentArea = document.createElement('div');
@@ -383,9 +391,10 @@ function renderChunkStudy(container, chunk, ci) {
 
 function renderChunkTabContent(container, chunk, ci, tab) {
   container.innerHTML = '';
-  if (tab === 'vocab')   renderChunkVocab(container, chunk);
-  if (tab === 'passive') renderChunkPassive(container, chunk, ci);
-  if (tab === 'active')  renderChunkActive(container, chunk, ci);
+  if (tab === 'vocab')     renderChunkVocab(container, chunk);
+  if (tab === 'passive')   renderChunkPassive(container, chunk, ci);
+  if (tab === 'active')    renderChunkActive(container, chunk, ci);
+  if (tab === 'dictation') renderChunkDictation(container, chunk, ci);
 }
 
 // ── Chunk: Vocabulary ─────────────────────────────────────────────────────────
@@ -588,6 +597,278 @@ function showActiveResult(container, chunk, ci) {
     e.stopPropagation();
     allTalks[currentSlug].listening.chunks[ci].active.sessions[sessionIdx] = { done: true, score: correct, total };
     alState = null;
+    chrome.storage.local.set({ talks: allTalks }, buildListeningView);
+  });
+}
+
+// ── Dictation ─────────────────────────────────────────────────────────────────
+
+function splitSentences(text) {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 15 && /[a-zA-Z]{3,}/.test(s));
+}
+
+function initChunkDictation(chunk) {
+  if (chunk.dictation) return;
+  const sentences = splitSentences(chunk.text);
+  chunk.dictation = {
+    sentences,
+    sessions: Array(DICTATION_SESSIONS).fill(null).map(() => ({
+      done: false, score: null, total: sentences.length,
+    })),
+  };
+  chrome.storage.local.set({ talks: allTalks });
+}
+
+function speakText(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'en-US';
+  utt.rate = 0.85;
+  window.speechSynthesis.speak(utt);
+}
+
+function compareWords(original, userInput) {
+  const normalize = s => s.toLowerCase().replace(/[^a-z\s']/g, '').trim();
+  const origWords = normalize(original).split(/\s+/).filter(Boolean);
+  const userWords = normalize(userInput).split(/\s+/).filter(Boolean);
+  const results = origWords.map((word, i) => ({
+    original: word,
+    user: userWords[i] || null,
+    correct: userWords[i] === word,
+  }));
+  const correct = results.filter(r => r.correct).length;
+  return { results, correct, total: origWords.length, pct: Math.round(correct / origWords.length * 100) };
+}
+
+function renderChunkDictation(container, chunk, ci) {
+  initChunkDictation(chunk);
+  const { sentences, sessions } = chunk.dictation;
+  const doneCount = sessions.filter(s => s.done).length;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'active-session-header';
+  hdr.innerHTML = `<span>${sentences.length} cümle &nbsp;·&nbsp; <strong>${doneCount}/${DICTATION_SESSIONS}</strong> tur tamamlandı</span>`;
+  container.appendChild(hdr);
+
+  const sessionRow = document.createElement('div');
+  sessionRow.className = 'active-session-row';
+  sessions.forEach((sess, si) => {
+    const isActive = dictState && dictState.chunkIdx === ci && dictState.sessionIdx === si;
+    const pill = document.createElement('button');
+    pill.className = `session-pill ${sess.done ? 'pill-sess-done' : ''} ${isActive ? 'pill-sess-active' : ''}`;
+    pill.textContent = sess.done ? `✅ %${Math.round(sess.score / sess.total * 100)}` : `${si + 1}. Tur`;
+    pill.title = sess.done ? 'Tekrar yapmak için tıkla' : 'Bu turu başlat';
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dictState = {
+        slug: currentSlug, chunkIdx: ci, sessionIdx: si,
+        sentences,
+        currentSentence: 0,
+        answers: sentences.map(() => ({ input: '', result: null, checked: false })),
+        complete: false,
+      };
+      refreshDictTab(chunk, ci);
+    });
+    sessionRow.appendChild(pill);
+  });
+  container.appendChild(sessionRow);
+
+  const exerciseArea = document.createElement('div');
+  exerciseArea.className = 'active-exercise-area';
+  exerciseArea.id = `dict-area-${ci}`;
+  container.appendChild(exerciseArea);
+
+  if (dictState && dictState.chunkIdx === ci) {
+    renderDictationExercise(exerciseArea, chunk, ci);
+  } else {
+    exerciseArea.innerHTML = `<p class="active-start-hint">Bir tur seçin. Her cümle okunacak, siz yazacaksınız.</p>`;
+  }
+}
+
+function refreshDictTab(chunk, ci) {
+  const body = document.getElementById(`chunk-body-${ci}`);
+  if (body) renderChunkTabContent(body.querySelector('.chunk-tab-content'), chunk, ci, 'dictation');
+}
+
+function renderDictationExercise(container, chunk, ci) {
+  if (!dictState) return;
+  const { sentences, currentSentence, answers, complete } = dictState;
+  container.innerHTML = '';
+
+  if (complete) { showDictationResult(container, chunk, ci); return; }
+
+  const sent = sentences[currentSentence];
+  const answer = answers[currentSentence];
+
+  // Progress bar
+  const prog = document.createElement('div');
+  prog.className = 'dict-progress';
+  const pct = Math.round(currentSentence / sentences.length * 100);
+  prog.innerHTML = `
+    <span>Cümle <strong>${currentSentence + 1}</strong> / ${sentences.length}</span>
+    <div class="dict-prog-bar"><div class="dict-prog-fill" style="width:${pct}%"></div></div>`;
+  container.appendChild(prog);
+
+  // Listen buttons
+  const listenRow = document.createElement('div');
+  listenRow.className = 'dict-listen-row';
+  const btnListen = document.createElement('button');
+  btnListen.className = 'btn-listen';
+  btnListen.innerHTML = '🔊 Dinle';
+  btnListen.addEventListener('click', (e) => { e.stopPropagation(); speakText(sent); });
+  const btnRepeat = document.createElement('button');
+  btnRepeat.className = 'btn-secondary btn-sm';
+  btnRepeat.innerHTML = '🔄 Yavaş';
+  btnRepeat.addEventListener('click', (e) => {
+    e.stopPropagation();
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(sent);
+    utt.lang = 'en-US'; utt.rate = 0.65;
+    window.speechSynthesis.speak(utt);
+  });
+  listenRow.appendChild(btnListen);
+  listenRow.appendChild(btnRepeat);
+  container.appendChild(listenRow);
+
+  if (answer.checked) {
+    renderSentenceResult(container, sent, answer, currentSentence, chunk, ci);
+    return;
+  }
+
+  // Input
+  const textarea = document.createElement('textarea');
+  textarea.className = 'dict-textarea';
+  textarea.placeholder = 'Duyduğunuzu buraya yazın…';
+  textarea.value = answer.input;
+  textarea.addEventListener('input', () => { dictState.answers[currentSentence].input = textarea.value; });
+  // Auto-play on first view
+  if (!answer.input) speakText(sent);
+  container.appendChild(textarea);
+
+  const btnCheck = document.createElement('button');
+  btnCheck.className = 'btn-primary';
+  btnCheck.textContent = 'Kontrol Et';
+  btnCheck.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const val = textarea.value.trim();
+    if (!val) return;
+    dictState.answers[currentSentence].input = val;
+    dictState.answers[currentSentence].result = compareWords(sent, val);
+    dictState.answers[currentSentence].checked = true;
+    refreshDictTab(chunk, ci);
+  });
+  container.appendChild(btnCheck);
+}
+
+function renderSentenceResult(container, sent, answer, sentIdx, chunk, ci) {
+  const { result } = answer;
+  const { sentences } = dictState;
+
+  // Word-by-word comparison
+  const resultDiv = document.createElement('div');
+  resultDiv.className = 'dict-result';
+  resultDiv.append(
+    ...result.results.map(r => {
+      const span = document.createElement('span');
+      span.className = `dict-word ${r.correct ? 'dict-ok' : 'dict-fail'}`;
+      span.textContent = r.original;
+      if (!r.correct) span.title = r.user ? `Yazdınız: "${r.user}"` : '(boş bıraktınız)';
+      return span;
+    })
+  );
+  container.appendChild(resultDiv);
+
+  // Score line
+  const scoreDiv = document.createElement('div');
+  scoreDiv.className = 'dict-sentence-score';
+  scoreDiv.textContent = `${result.pct}% doğru (${result.correct}/${result.total} kelime)`;
+  container.appendChild(scoreDiv);
+
+  // Retry wrong answer
+  if (result.pct < 100) {
+    const btnRetry = document.createElement('button');
+    btnRetry.className = 'btn-secondary btn-sm';
+    btnRetry.textContent = '✏️ Tekrar Dene';
+    btnRetry.style.marginBottom = '8px';
+    btnRetry.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dictState.answers[sentIdx] = { input: dictState.answers[sentIdx].input, result: null, checked: false };
+      refreshDictTab(chunk, ci);
+    });
+    container.appendChild(btnRetry);
+  }
+
+  // Navigation
+  const navRow = document.createElement('div');
+  navRow.className = 'dict-nav-row';
+
+  if (sentIdx > 0) {
+    const btnPrev = document.createElement('button');
+    btnPrev.className = 'btn-secondary btn-sm';
+    btnPrev.textContent = '← Geri';
+    btnPrev.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dictState.currentSentence = sentIdx - 1;
+      refreshDictTab(chunk, ci);
+    });
+    navRow.appendChild(btnPrev);
+  }
+
+  if (sentIdx < sentences.length - 1) {
+    const btnNext = document.createElement('button');
+    btnNext.className = 'btn-primary';
+    btnNext.textContent = 'Sonraki →';
+    btnNext.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dictState.currentSentence = sentIdx + 1;
+      refreshDictTab(chunk, ci);
+    });
+    navRow.appendChild(btnNext);
+  } else {
+    // Last sentence — offer to complete if all checked
+    const allChecked = dictState.answers.every(a => a.checked);
+    if (allChecked) {
+      const btnFinish = document.createElement('button');
+      btnFinish.className = 'btn-primary';
+      btnFinish.textContent = 'Turu Bitir ✓';
+      btnFinish.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dictState.complete = true;
+        refreshDictTab(chunk, ci);
+      });
+      navRow.appendChild(btnFinish);
+    }
+  }
+  container.appendChild(navRow);
+}
+
+function showDictationResult(container, chunk, ci) {
+  const { answers, sessionIdx } = dictState;
+  const totalWords = answers.reduce((s, a) => s + (a.result ? a.result.total : 0), 0);
+  const correctWords = answers.reduce((s, a) => s + (a.result ? a.result.correct : 0), 0);
+  const pct = totalWords > 0 ? Math.round(correctWords / totalWords * 100) : 0;
+
+  const result = document.createElement('div');
+  result.className = 'active-result';
+  result.innerHTML = `
+    <div class="result-score">
+      <span class="score-big">${pct}%</span>
+      <span class="score-sub">${correctWords}/${totalWords} kelime doğru · ${dictState.sentences.length} cümle</span>
+    </div>
+    ${pct === 100 ? '<div class="result-perfect">Mükemmel dikte! 🎉</div>' : ''}
+    <button class="btn-primary btn-complete-session">Turu Kaydet</button>`;
+  container.appendChild(result);
+
+  result.querySelector('.btn-complete-session').addEventListener('click', (e) => {
+    e.stopPropagation();
+    allTalks[currentSlug].listening.chunks[ci].dictation.sessions[sessionIdx] = {
+      done: true, score: correctWords, total: totalWords,
+    };
+    dictState = null;
     chrome.storage.local.set({ talks: allTalks }, buildListeningView);
   });
 }

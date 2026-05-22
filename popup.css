@@ -373,6 +373,90 @@ header {
 .result-perfect { color: #16a34a; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .btn-complete-session { margin-top: 6px; }
 
+/* ── Dictation ── */
+.dict-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #777;
+  margin-bottom: 8px;
+}
+.dict-prog-bar {
+  flex: 1;
+  height: 5px;
+  background: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.dict-prog-fill {
+  height: 100%;
+  background: #e62b1e;
+  border-radius: 3px;
+  transition: width .3s;
+}
+.dict-listen-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.btn-listen {
+  background: #e62b1e;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-listen:hover { background: #c0231a; }
+.dict-textarea {
+  width: 100%;
+  height: 66px;
+  border: 1.5px solid #ddd;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  display: block;
+  margin-bottom: 8px;
+}
+.dict-textarea:focus { border-color: #e62b1e; }
+.dict-result {
+  background: #f8f8f8;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 2;
+  margin-bottom: 5px;
+  word-spacing: 2px;
+}
+.dict-word {
+  display: inline-block;
+  margin: 1px 2px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.dict-ok   { background: #d1fae5; color: #065f46; }
+.dict-fail { background: #fee2e2; color: #991b1b; text-decoration: underline wavy; cursor: help; }
+.dict-sentence-score {
+  font-size: 11px;
+  color: #777;
+  text-align: center;
+  margin-bottom: 6px;
+}
+.dict-nav-row {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
 
 .listen-header {
   display: flex;
