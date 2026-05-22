@@ -12,7 +12,14 @@ let fcFlipped = false;
 
 const $ = (id) => document.getElementById(id);
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── Listening constants ───────────────────────────────────────────────────────
+const WPM = 130;               // average TED speaker words/minute
+const CHUNK_MINS = 5;          // target chunk length in minutes
+const WORDS_PER_CHUNK = WPM * CHUNK_MINS; // 650 words ≈ 5 min
+const SHORT_THRESHOLD = WPM * CHUNK_MINS; // talks shorter than 1 chunk = "short"
+const SESSIONS_REQUIRED = 3;  // mandatory passive listening sessions
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('tr-TR', {
@@ -81,6 +88,192 @@ function setFetchStatus(msg, type = 'info') {
   el.textContent = msg;
   el.className = `fetch-status status-${type}`;
   el.classList.remove('hidden');
+}
+
+// ── Listening helpers ─────────────────────────────────────────────────────────
+
+function wordCount(text) {
+  return (text.match(/\b[a-zA-Z']+\b/g) || []).length;
+}
+
+function estimatedMins(text) {
+  return Math.round(wordCount(text) / WPM);
+}
+
+function splitIntoChunks(transcript) {
+  // Split at sentence boundaries, group into ~WORDS_PER_CHUNK word blocks
+  const sentences = transcript.split(/(?<=[.!?])\s+/);
+  const chunks = [];
+  let buf = '';
+  let bufWords = 0;
+
+  for (const sent of sentences) {
+    const sw = wordCount(sent);
+    if (bufWords + sw > WORDS_PER_CHUNK && buf) {
+      chunks.push(buf.trim());
+      buf = sent + ' ';
+      bufWords = sw;
+    } else {
+      buf += sent + ' ';
+      bufWords += sw;
+    }
+  }
+  if (buf.trim()) chunks.push(buf.trim());
+  return chunks;
+}
+
+function initListeningData(talk) {
+  if (talk.listening) return; // already initialised
+  const wc = wordCount(talk.transcript);
+  const isShort = wc <= SHORT_THRESHOLD;
+
+  if (isShort) {
+    talk.listening = {
+      mode: 'short',
+      durationMins: Math.max(1, Math.round(wc / WPM)),
+      sessions: [false, false, false],
+    };
+  } else {
+    const chunkTexts = splitIntoChunks(talk.transcript);
+    talk.listening = {
+      mode: 'chunks',
+      durationMins: Math.round(wc / WPM),
+      chunks: chunkTexts.map((text, i) => ({
+        index: i,
+        text,
+        timeStart: i * CHUNK_MINS,
+        timeEnd: (i + 1) * CHUNK_MINS,
+        sessions: [false, false, false],
+      })),
+    };
+  }
+  chrome.storage.local.set({ talks: allTalks });
+}
+
+function fmtTime(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}s ${m}dk` : `${m}dk`;
+}
+
+function sessionsDone(arr) { return arr.filter(Boolean).length; }
+
+function buildListeningView() {
+  const talk = allTalks[currentSlug];
+  if (!talk) return;
+  initListeningData(talk);
+
+  const container = $('listen-content');
+  container.innerHTML = '';
+
+  const ld = talk.listening;
+  const header = document.createElement('div');
+  header.className = 'listen-header';
+  header.innerHTML = `
+    <div class="listen-duration">
+      ⏱ Tahmini süre: <strong>~${fmtTime(ld.durationMins)}</strong>
+    </div>
+    <div class="listen-mode-badge ${ld.mode === 'short' ? 'mode-short' : 'mode-chunks'}">
+      ${ld.mode === 'short' ? 'Kısa Konuşma (<5dk)' : `${ld.chunks.length} Parçaya Bölündü`}
+    </div>`;
+  container.appendChild(header);
+
+  if (ld.mode === 'short') {
+    renderShortListening(container, ld);
+  } else {
+    renderChunkListening(container, ld);
+  }
+}
+
+function renderShortListening(container, ld) {
+  const done = sessionsDone(ld.sessions);
+  const wrap = document.createElement('div');
+  wrap.className = 'short-listen-wrap';
+  wrap.innerHTML = `
+    <p class="listen-instruction">
+      Bu konuşma kısa olduğu için <strong>${SESSIONS_REQUIRED} kez pasif dinleme</strong> yapmanız önerilir.
+      Her dinleme sonrası işaretleyin.
+    </p>
+    <div class="session-dots" id="short-sessions"></div>
+    <div class="listen-progress-text">${done}/${SESSIONS_REQUIRED} tamamlandı
+      ${done === SESSIONS_REQUIRED ? ' 🎉' : ''}
+    </div>`;
+  container.appendChild(wrap);
+
+  const dots = wrap.querySelector('#short-sessions');
+  ld.sessions.forEach((done, i) => {
+    const btn = document.createElement('button');
+    btn.className = `session-dot ${done ? 'done' : ''}`;
+    btn.innerHTML = done ? `✅` : `${i + 1}. Dinleme`;
+    btn.title = done ? 'Tamamlandı (tekrar tıkla = geri al)' : `${i + 1}. pasif dinlemeyi işaretle`;
+    btn.addEventListener('click', () => {
+      allTalks[currentSlug].listening.sessions[i] = !done;
+      chrome.storage.local.set({ talks: allTalks }, buildListeningView);
+    });
+    dots.appendChild(btn);
+  });
+}
+
+function renderChunkListening(container, ld) {
+  const totalDone = ld.chunks.filter(c => sessionsDone(c.sessions) === SESSIONS_REQUIRED).length;
+  const summary = document.createElement('div');
+  summary.className = 'chunks-summary';
+  summary.innerHTML = `
+    <span>${totalDone}/${ld.chunks.length} parça tamamlandı</span>
+    <div class="chunks-overall-bar">
+      <div class="chunks-overall-fill" style="width:${Math.round(totalDone / ld.chunks.length * 100)}%"></div>
+    </div>`;
+  container.appendChild(summary);
+
+  ld.chunks.forEach((chunk, ci) => {
+    const done = sessionsDone(chunk.sessions);
+    const completed = done === SESSIONS_REQUIRED;
+    const block = document.createElement('div');
+    block.className = `chunk-block ${completed ? 'chunk-done' : ''}`;
+    block.dataset.chunk = ci;
+
+    block.innerHTML = `
+      <div class="chunk-header">
+        <span class="chunk-num">Parça ${ci + 1}</span>
+        <span class="chunk-time">${chunk.timeStart}:00 – ${chunk.timeEnd}:00</span>
+        <span class="chunk-sessions-mini">${done}/${SESSIONS_REQUIRED} ${completed ? '✅' : ''}</span>
+        <button class="chunk-toggle btn-link">▼</button>
+      </div>
+      <div class="chunk-body hidden">
+        <div class="chunk-transcript">${escHtml(chunk.text)}</div>
+        <div class="chunk-session-row" id="chunk-sess-${ci}"></div>
+      </div>`;
+
+    container.appendChild(block);
+
+    const sessRow = block.querySelector(`#chunk-sess-${ci}`);
+    chunk.sessions.forEach((isDone, si) => {
+      const btn = document.createElement('button');
+      btn.className = `session-dot ${isDone ? 'done' : ''}`;
+      btn.innerHTML = isDone ? '✅' : `${si + 1}. Dinleme`;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        allTalks[currentSlug].listening.chunks[ci].sessions[si] = !isDone;
+        chrome.storage.local.set({ talks: allTalks }, buildListeningView);
+      });
+      sessRow.appendChild(btn);
+    });
+
+    // Toggle transcript
+    const toggleBtn = block.querySelector('.chunk-toggle');
+    const body = block.querySelector('.chunk-body');
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = !body.classList.contains('hidden');
+      body.classList.toggle('hidden', open);
+      toggleBtn.textContent = open ? '▼' : '▲';
+    });
+
+    // Click header to toggle
+    block.querySelector('.chunk-header').addEventListener('click', () => {
+      toggleBtn.click();
+    });
+  });
 }
 
 // ── Vocabulary helpers ────────────────────────────────────────────────────────
@@ -306,6 +499,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     const panel = $(btn.dataset.tab);
     if (panel) panel.classList.remove('hidden');
 
+    if (btn.dataset.tab === 'tab-listen') buildListeningView();
     if (btn.dataset.tab === 'tab-vocab') buildVocabView();
     if (btn.dataset.tab === 'tab-flashcards') buildFlashcards();
     if (btn.dataset.tab === 'tab-progress') buildStats();

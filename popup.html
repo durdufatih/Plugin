@@ -42,6 +42,7 @@
     <!-- Sekmeler -->
     <div class="tabs">
       <button class="tab-btn active" data-tab="tab-transcript">📄 Transkript</button>
+      <button class="tab-btn" data-tab="tab-listen">🎧 Dinleme</button>
       <button class="tab-btn" data-tab="tab-vocab">📚 Kelimeler</button>
       <button class="tab-btn" data-tab="tab-flashcards">🃏 Flashcard</button>
       <button class="tab-btn" data-tab="tab-progress">📈 İlerleme</button>
@@ -55,6 +56,11 @@
         <button id="btn-delete" class="btn-danger">🗑 Sil</button>
       </div>
       <div id="transcript-text"></div>
+    </div>
+
+    <!-- Sekme: Dinleme -->
+    <div id="tab-listen" class="tab-panel hidden">
+      <div id="listen-content"></div>
     </div>
 
     <!-- Sekme: Kelimeler -->

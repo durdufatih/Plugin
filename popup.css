@@ -250,6 +250,105 @@ header {
 .stat-bar { height: 100%; border-radius: 4px; }
 .stat-pct { font-size: 11px; color: #666; width: 28px; text-align: right; }
 
+/* ── Listening tab ── */
+.listen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+.listen-duration { font-size: 12px; color: #555; }
+.listen-mode-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 8px;
+}
+.mode-short  { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.mode-chunks { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+
+.listen-instruction { font-size: 12px; color: #555; line-height: 1.6; margin-bottom: 12px; }
+
+.session-dots { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.session-dot {
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1.5px solid #ddd;
+  background: #f8f8f8;
+  color: #555;
+  transition: all .15s;
+}
+.session-dot:hover:not(.done) { border-color: #e62b1e; color: #e62b1e; background: #fff5f5; }
+.session-dot.done {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #16a34a;
+  font-size: 16px;
+  padding: 4px 12px;
+}
+.listen-progress-text { font-size: 11px; color: #888; margin-top: 4px; }
+
+/* Chunk mode */
+.chunks-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: #777;
+  margin-bottom: 10px;
+}
+.chunks-overall-bar {
+  flex: 1;
+  height: 6px;
+  background: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.chunks-overall-fill { height: 100%; background: #e62b1e; border-radius: 3px; transition: width .3s; }
+
+.chunk-block {
+  border: 1.5px solid #eee;
+  border-radius: 8px;
+  margin-bottom: 7px;
+  overflow: hidden;
+  background: #fff;
+}
+.chunk-block.chunk-done { border-color: #bbf7d0; background: #f0fdf4; }
+
+.chunk-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.chunk-block.chunk-done .chunk-header { background: #f0fdf4; }
+.chunk-num { font-size: 12px; font-weight: 700; color: #333; }
+.chunk-time { font-size: 11px; color: #888; flex: 1; }
+.chunk-sessions-mini { font-size: 11px; color: #aaa; }
+.btn-link { background: none; border: none; cursor: pointer; font-size: 11px; color: #aaa; padding: 0 2px; }
+
+.chunk-body { padding: 0 12px 10px; }
+.chunk-transcript {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #444;
+  background: #f8f8f8;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  margin-bottom: 8px;
+}
+.chunk-session-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
 /* ── Buttons ── */
 .btn-primary {
   background: #e62b1e; color: #fff;
