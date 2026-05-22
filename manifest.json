@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "TED Transcript Tracker",
+  "version": "1.0.0",
+  "description": "TED konuşmalarının transkriptlerini otomatik çek ve takip et",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://www.ted.com/*", "https://ted.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.ted.com/talks/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
