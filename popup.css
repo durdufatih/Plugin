@@ -251,6 +251,129 @@ header {
 .stat-pct { font-size: 11px; color: #666; width: 28px; text-align: right; }
 
 /* ── Listening tab ── */
+.chunk-vocab-text {
+  font-size: 12px; line-height: 2.1;
+  background: #fff; border: 1px solid #e8e8e8;
+  border-radius: 6px; padding: 10px;
+  max-height: 160px; overflow-y: auto;
+  white-space: pre-wrap;
+}
+.chunk-passive-wrap { padding: 4px 0; }
+
+/* Chunk sub-tabs */
+.chunk-tabs {
+  display: flex; gap: 2px;
+  border-bottom: 1.5px solid #eee;
+  margin-bottom: 8px;
+  padding-bottom: 0;
+}
+.chunk-tab-btn {
+  background: none; border: none;
+  font-size: 11px; font-weight: 600;
+  color: #888; cursor: pointer;
+  padding: 5px 9px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1.5px;
+  transition: color .12s;
+}
+.chunk-tab-btn.active { color: #e62b1e; border-bottom-color: #e62b1e; }
+.chunk-tab-btn:hover:not(.active) { color: #333; }
+.chunk-tab-content { padding: 4px 0; }
+
+/* Status pills on chunk header */
+.chunk-status-pills { display: flex; gap: 4px; margin-left: auto; }
+.pill {
+  font-size: 10px; font-weight: 700;
+  padding: 2px 6px; border-radius: 6px;
+  background: #f0f0f0; color: #888;
+  border: 1px solid #ddd;
+}
+.pill.pill-done { background: #f0fdf4; color: #16a34a; border-color: #bbf7d0; }
+
+/* Active session header */
+.active-session-header {
+  font-size: 11px; color: #666;
+  margin-bottom: 8px;
+}
+.active-session-row {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  margin-bottom: 10px;
+}
+.session-pill {
+  font-size: 11px; font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1.5px solid #ddd;
+  background: #f8f8f8; color: #555;
+  cursor: pointer; transition: all .12s;
+}
+.session-pill:hover { border-color: #e62b1e; color: #e62b1e; }
+.pill-sess-done { background: #f0fdf4; border-color: #bbf7d0; color: #16a34a; }
+.pill-sess-active { background: #fff5f5; border-color: #e62b1e; color: #e62b1e; }
+
+.active-exercise-area { margin-top: 4px; }
+.active-start-hint { font-size: 11px; color: #aaa; text-align: center; padding: 10px 0; }
+
+/* Fill-in-the-blank */
+.fill-blank-text {
+  font-size: 12px; line-height: 2.2;
+  background: #fff; border: 1px solid #e8e8e8;
+  border-radius: 6px; padding: 10px;
+  max-height: 150px; overflow-y: auto;
+  margin-bottom: 10px;
+}
+.blank-slot {
+  display: inline-block;
+  min-width: 44px;
+  text-align: center;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin: 0 2px;
+  font-weight: 600;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all .12s;
+}
+.blank-empty   { background: #f0f0f0; color: #666; border: 1.5px dashed #ccc; }
+.blank-focused { background: #fff3cd; color: #856404; border: 1.5px solid #ffc107; }
+.blank-correct { background: #d1fae5; color: #065f46; border: 1.5px solid #6ee7b7; cursor: default; }
+.blank-wrong   { background: #fee2e2; color: #991b1b; border: 1.5px solid #fca5a5; }
+
+.word-bank { margin-top: 6px; }
+.word-bank-label {
+  font-size: 11px; color: #777;
+  margin-bottom: 5px; font-weight: 600;
+}
+.word-bank-options { display: flex; flex-wrap: wrap; gap: 5px; }
+.word-bank-btn {
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1.5px solid #ddd;
+  background: #fff; color: #333;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .12s;
+}
+.word-bank-btn:hover { border-color: #e62b1e; color: #e62b1e; background: #fff5f5; }
+
+/* Active result */
+.active-result { text-align: center; padding: 6px 0; }
+.result-score { margin-bottom: 10px; }
+.score-big { font-size: 28px; font-weight: 800; color: #1a1a1a; }
+.score-sub { display: block; font-size: 11px; color: #777; margin-top: 2px; }
+.wrong-list {
+  text-align: left;
+  background: #fff8f8; border: 1px solid #fecaca;
+  border-radius: 6px; padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.wrong-item { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 4px; }
+.wrong-given  { color: #dc2626; font-weight: 600; text-decoration: line-through; }
+.wrong-arrow  { color: #aaa; font-size: 14px; }
+.wrong-correct { color: #16a34a; font-weight: 700; }
+.result-perfect { color: #16a34a; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.btn-complete-session { margin-top: 6px; }
+
+
 .listen-header {
   display: flex;
   align-items: center;

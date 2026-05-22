@@ -13,11 +13,35 @@ let fcFlipped = false;
 const $ = (id) => document.getElementById(id);
 
 // ── Listening constants ───────────────────────────────────────────────────────
-const WPM = 130;               // average TED speaker words/minute
-const CHUNK_MINS = 5;          // target chunk length in minutes
-const WORDS_PER_CHUNK = WPM * CHUNK_MINS; // 650 words ≈ 5 min
-const SHORT_THRESHOLD = WPM * CHUNK_MINS; // talks shorter than 1 chunk = "short"
-const SESSIONS_REQUIRED = 3;  // mandatory passive listening sessions
+const WPM = 130;
+const CHUNK_MINS = 5;
+const WORDS_PER_CHUNK = WPM * CHUNK_MINS;
+const SHORT_THRESHOLD = WORDS_PER_CHUNK;
+const PASSIVE_SESSIONS = 3;
+const ACTIVE_SESSIONS = 5;
+const MAX_BLANKS = 12;
+const MIN_BLANKS = 4;
+const BLANK_RATIO = 0.22;
+
+// Stop words excluded from blank selection
+const STOP_WORDS_SET = new Set([
+  'a','an','the','is','are','was','were','be','been','being','have','has','had',
+  'do','does','did','will','would','could','should','may','might','shall','can',
+  'to','of','in','on','at','by','for','with','from','up','about','into','through',
+  'and','but','or','nor','so','yet','not','just','than','then','now','here','there',
+  'also','well','even','still','very','too','only','such','both','all','each',
+  'that','this','these','those','i','me','my','we','our','you','your',
+  'he','him','his','she','her','it','its','they','them','their',
+  'what','which','who','when','where','why','how','some','any','more','most',
+  'other','same','own','like','as','if','though','because','since','unless',
+  'after','before','while','during','until','over','under','between','upon',
+]);
+
+// Per-chunk expanded sub-tab (in-memory)
+const chunkSubTab = {};
+
+// Active exercise in-memory state
+let alState = null;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -96,67 +120,129 @@ function wordCount(text) {
   return (text.match(/\b[a-zA-Z']+\b/g) || []).length;
 }
 
-function estimatedMins(text) {
-  return Math.round(wordCount(text) / WPM);
-}
-
 function splitIntoChunks(transcript) {
-  // Split at sentence boundaries, group into ~WORDS_PER_CHUNK word blocks
   const sentences = transcript.split(/(?<=[.!?])\s+/);
   const chunks = [];
-  let buf = '';
-  let bufWords = 0;
-
+  let buf = '', bufWords = 0;
   for (const sent of sentences) {
     const sw = wordCount(sent);
     if (bufWords + sw > WORDS_PER_CHUNK && buf) {
-      chunks.push(buf.trim());
-      buf = sent + ' ';
-      bufWords = sw;
-    } else {
-      buf += sent + ' ';
-      bufWords += sw;
-    }
+      chunks.push(buf.trim()); buf = sent + ' '; bufWords = sw;
+    } else { buf += sent + ' '; bufWords += sw; }
   }
   if (buf.trim()) chunks.push(buf.trim());
   return chunks;
 }
 
-function initListeningData(talk) {
-  if (talk.listening) return; // already initialised
-  const wc = wordCount(talk.transcript);
-  const isShort = wc <= SHORT_THRESHOLD;
-
-  if (isShort) {
-    talk.listening = {
-      mode: 'short',
-      durationMins: Math.max(1, Math.round(wc / WPM)),
-      sessions: [false, false, false],
-    };
-  } else {
-    const chunkTexts = splitIntoChunks(talk.transcript);
-    talk.listening = {
-      mode: 'chunks',
-      durationMins: Math.round(wc / WPM),
-      chunks: chunkTexts.map((text, i) => ({
-        index: i,
-        text,
-        timeStart: i * CHUNK_MINS,
-        timeEnd: (i + 1) * CHUNK_MINS,
-        sessions: [false, false, false],
-      })),
-    };
-  }
-  chrome.storage.local.set({ talks: allTalks });
-}
-
 function fmtTime(mins) {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
+  const h = Math.floor(mins / 60), m = mins % 60;
   return h > 0 ? `${h}s ${m}dk` : `${m}dk`;
 }
 
-function sessionsDone(arr) { return arr.filter(Boolean).length; }
+function sessionsDone(arr) { return (arr || []).filter(Boolean).length; }
+
+// ── Blank generation ──────────────────────────────────────────────────────────
+
+function generateChunkBlanks(text) {
+  const tokenRe = /([a-zA-Z']{4,})|([^a-zA-Z']+|[a-zA-Z']{1,3})/g;
+  const tokens = [];
+  let m;
+  while ((m = tokenRe.exec(text)) !== null) {
+    const isContent = !!m[1] && !STOP_WORDS_SET.has(m[1].toLowerCase());
+    tokens.push({ text: m[0], lower: m[0].toLowerCase(), isContent });
+  }
+
+  const seen = new Set();
+  const unique = [];
+  tokens.forEach((t, i) => {
+    if (t.isContent && !seen.has(t.lower)) { seen.add(t.lower); unique.push(t.lower); }
+  });
+
+  const count = Math.min(MAX_BLANKS, Math.max(MIN_BLANKS, Math.floor(unique.length * BLANK_RATIO)));
+  const shuffled = [...unique].sort(() => Math.random() - 0.5);
+  const blankWordSet = new Set(shuffled.slice(0, count));
+  const pool = unique.filter(w => !blankWordSet.has(w));
+
+  const blanks = [];
+  const assigned = new Set();
+  tokens.forEach(t => {
+    if (t.isContent && blankWordSet.has(t.lower) && !assigned.has(t.lower)) {
+      assigned.add(t.lower);
+      const opts = [t.lower, ...[...pool].sort(() => Math.random() - 0.5).slice(0, 3)].sort(() => Math.random() - 0.5);
+      blanks.push({ word: t.lower, options: opts });
+      t.blankIdx = blanks.length - 1;
+    }
+  });
+  return blanks;
+}
+
+// Reconstruct blank tokens from stored blank list (deterministic, no random)
+function getBlankTokens(text, blanks) {
+  const blankWordSet = new Set(blanks.map(b => b.word));
+  const lookup = Object.fromEntries(blanks.map((b, i) => [b.word, i]));
+  const tokenRe = /([a-zA-Z']{4,})|([^a-zA-Z']+|[a-zA-Z']{1,3})/g;
+  const tokens = [];
+  const assigned = new Set();
+  let m;
+  while ((m = tokenRe.exec(text)) !== null) {
+    const lw = m[0].toLowerCase();
+    if (m[1] && blankWordSet.has(lw) && !assigned.has(lw)) {
+      assigned.add(lw);
+      tokens.push({ text: m[0], isBlank: true, blankIdx: lookup[lw] });
+    } else {
+      tokens.push({ text: m[0], isBlank: false });
+    }
+  }
+  return tokens;
+}
+
+// ── Listening data init ───────────────────────────────────────────────────────
+
+function initListeningData(talk) {
+  let changed = false;
+  if (!talk.listening) {
+    const wc = wordCount(talk.transcript);
+    if (wc <= SHORT_THRESHOLD) {
+      talk.listening = {
+        mode: 'short',
+        durationMins: Math.max(1, Math.round(wc / WPM)),
+        sessions: [false, false, false],
+      };
+    } else {
+      talk.listening = {
+        mode: 'chunks',
+        durationMins: Math.round(wc / WPM),
+        chunks: splitIntoChunks(talk.transcript).map((text, i) => ({
+          index: i, text,
+          timeStart: i * CHUNK_MINS, timeEnd: (i + 1) * CHUNK_MINS,
+          passive: [false, false, false],
+          active: null,
+        })),
+      };
+    }
+    changed = true;
+  }
+  // Migrate old format
+  if (talk.listening.mode === 'chunks') {
+    talk.listening.chunks.forEach(c => {
+      if (c.sessions && !c.passive) { c.passive = c.sessions; delete c.sessions; changed = true; }
+      if (!c.passive) { c.passive = [false, false, false]; changed = true; }
+    });
+  }
+  if (changed) chrome.storage.local.set({ talks: allTalks });
+}
+
+function initChunkActive(chunk) {
+  if (chunk.active) return;
+  chunk.active = {
+    blanks: generateChunkBlanks(chunk.text),
+    sessions: Array(ACTIVE_SESSIONS).fill(null).map(() => ({ done: false, score: null, total: 0 })),
+  };
+  chunk.active.sessions.forEach(s => { s.total = chunk.active.blanks.length; });
+  chrome.storage.local.set({ talks: allTalks });
+}
+
+// ── Main listening view ───────────────────────────────────────────────────────
 
 function buildListeningView() {
   const talk = allTalks[currentSlug];
@@ -165,24 +251,19 @@ function buildListeningView() {
 
   const container = $('listen-content');
   container.innerHTML = '';
-
   const ld = talk.listening;
-  const header = document.createElement('div');
-  header.className = 'listen-header';
-  header.innerHTML = `
-    <div class="listen-duration">
-      ⏱ Tahmini süre: <strong>~${fmtTime(ld.durationMins)}</strong>
-    </div>
-    <div class="listen-mode-badge ${ld.mode === 'short' ? 'mode-short' : 'mode-chunks'}">
-      ${ld.mode === 'short' ? 'Kısa Konuşma (<5dk)' : `${ld.chunks.length} Parçaya Bölündü`}
-    </div>`;
-  container.appendChild(header);
 
-  if (ld.mode === 'short') {
-    renderShortListening(container, ld);
-  } else {
-    renderChunkListening(container, ld);
-  }
+  const hdr = document.createElement('div');
+  hdr.className = 'listen-header';
+  hdr.innerHTML = `
+    <div class="listen-duration">⏱ Tahmini süre: <strong>~${fmtTime(ld.durationMins)}</strong></div>
+    <div class="listen-mode-badge ${ld.mode === 'short' ? 'mode-short' : 'mode-chunks'}">
+      ${ld.mode === 'short' ? 'Kısa (<5dk) · Pasif ×3' : `${ld.chunks.length} parça · 5dk`}
+    </div>`;
+  container.appendChild(hdr);
+
+  if (ld.mode === 'short') renderShortListening(container, ld);
+  else renderChunkListening(container, ld);
 }
 
 function renderShortListening(container, ld) {
@@ -190,24 +271,17 @@ function renderShortListening(container, ld) {
   const wrap = document.createElement('div');
   wrap.className = 'short-listen-wrap';
   wrap.innerHTML = `
-    <p class="listen-instruction">
-      Bu konuşma kısa olduğu için <strong>${SESSIONS_REQUIRED} kez pasif dinleme</strong> yapmanız önerilir.
-      Her dinleme sonrası işaretleyin.
-    </p>
-    <div class="session-dots" id="short-sessions"></div>
-    <div class="listen-progress-text">${done}/${SESSIONS_REQUIRED} tamamlandı
-      ${done === SESSIONS_REQUIRED ? ' 🎉' : ''}
-    </div>`;
+    <p class="listen-instruction">Kısa konuşma — tam metni <strong>${PASSIVE_SESSIONS} kez pasif dinleyin</strong>.</p>
+    <div class="session-dots"></div>
+    <div class="listen-progress-text">${done}/${PASSIVE_SESSIONS} tamamlandı ${done >= PASSIVE_SESSIONS ? '🎉' : ''}</div>`;
   container.appendChild(wrap);
-
-  const dots = wrap.querySelector('#short-sessions');
-  ld.sessions.forEach((done, i) => {
+  const dots = wrap.querySelector('.session-dots');
+  ld.sessions.forEach((isDone, i) => {
     const btn = document.createElement('button');
-    btn.className = `session-dot ${done ? 'done' : ''}`;
-    btn.innerHTML = done ? `✅` : `${i + 1}. Dinleme`;
-    btn.title = done ? 'Tamamlandı (tekrar tıkla = geri al)' : `${i + 1}. pasif dinlemeyi işaretle`;
+    btn.className = `session-dot ${isDone ? 'done' : ''}`;
+    btn.innerHTML = isDone ? '✅' : `${i + 1}. Dinleme`;
     btn.addEventListener('click', () => {
-      allTalks[currentSlug].listening.sessions[i] = !done;
+      allTalks[currentSlug].listening.sessions[i] = !isDone;
       chrome.storage.local.set({ talks: allTalks }, buildListeningView);
     });
     dots.appendChild(btn);
@@ -215,64 +289,306 @@ function renderShortListening(container, ld) {
 }
 
 function renderChunkListening(container, ld) {
-  const totalDone = ld.chunks.filter(c => sessionsDone(c.sessions) === SESSIONS_REQUIRED).length;
+  const total = ld.chunks.length;
+  const completed = ld.chunks.filter(c => chunkFullyDone(c)).length;
   const summary = document.createElement('div');
   summary.className = 'chunks-summary';
   summary.innerHTML = `
-    <span>${totalDone}/${ld.chunks.length} parça tamamlandı</span>
+    <span>${completed}/${total} parça tamamlandı</span>
     <div class="chunks-overall-bar">
-      <div class="chunks-overall-fill" style="width:${Math.round(totalDone / ld.chunks.length * 100)}%"></div>
+      <div class="chunks-overall-fill" style="width:${Math.round(completed / total * 100)}%"></div>
     </div>`;
   container.appendChild(summary);
+  ld.chunks.forEach((chunk, ci) => container.appendChild(renderChunkBlock(chunk, ci)));
+}
 
-  ld.chunks.forEach((chunk, ci) => {
-    const done = sessionsDone(chunk.sessions);
-    const completed = done === SESSIONS_REQUIRED;
-    const block = document.createElement('div');
-    block.className = `chunk-block ${completed ? 'chunk-done' : ''}`;
-    block.dataset.chunk = ci;
+function chunkFullyDone(chunk) {
+  const p = sessionsDone(chunk.passive) >= PASSIVE_SESSIONS;
+  const a = chunk.active ? chunk.active.sessions.filter(s => s.done).length >= ACTIVE_SESSIONS : false;
+  return p && a;
+}
 
-    block.innerHTML = `
-      <div class="chunk-header">
-        <span class="chunk-num">Parça ${ci + 1}</span>
-        <span class="chunk-time">${chunk.timeStart}:00 – ${chunk.timeEnd}:00</span>
-        <span class="chunk-sessions-mini">${done}/${SESSIONS_REQUIRED} ${completed ? '✅' : ''}</span>
-        <button class="chunk-toggle btn-link">▼</button>
-      </div>
-      <div class="chunk-body hidden">
-        <div class="chunk-transcript">${escHtml(chunk.text)}</div>
-        <div class="chunk-session-row" id="chunk-sess-${ci}"></div>
-      </div>`;
+// ── Chunk block ───────────────────────────────────────────────────────────────
 
-    container.appendChild(block);
+function renderChunkBlock(chunk, ci) {
+  const pDone = sessionsDone(chunk.passive);
+  const aDone = chunk.active ? chunk.active.sessions.filter(s => s.done).length : 0;
+  const done = pDone >= PASSIVE_SESSIONS && aDone >= ACTIVE_SESSIONS;
 
-    const sessRow = block.querySelector(`#chunk-sess-${ci}`);
-    chunk.sessions.forEach((isDone, si) => {
-      const btn = document.createElement('button');
-      btn.className = `session-dot ${isDone ? 'done' : ''}`;
-      btn.innerHTML = isDone ? '✅' : `${si + 1}. Dinleme`;
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        allTalks[currentSlug].listening.chunks[ci].sessions[si] = !isDone;
-        chrome.storage.local.set({ talks: allTalks }, buildListeningView);
-      });
-      sessRow.appendChild(btn);
-    });
+  const block = document.createElement('div');
+  block.className = `chunk-block ${done ? 'chunk-done' : ''}`;
 
-    // Toggle transcript
-    const toggleBtn = block.querySelector('.chunk-toggle');
-    const body = block.querySelector('.chunk-body');
-    toggleBtn.addEventListener('click', (e) => {
+  const hdr = document.createElement('div');
+  hdr.className = 'chunk-header';
+  hdr.innerHTML = `
+    <span class="chunk-num">Parça ${ci + 1}</span>
+    <span class="chunk-time">${chunk.timeStart}:00–${chunk.timeEnd}:00</span>
+    <div class="chunk-status-pills">
+      <span class="pill ${pDone >= PASSIVE_SESSIONS ? 'pill-done' : ''}">P ${pDone}/${PASSIVE_SESSIONS}</span>
+      <span class="pill ${aDone >= ACTIVE_SESSIONS ? 'pill-done' : ''}">A ${aDone}/${ACTIVE_SESSIONS}</span>
+    </div>
+    <button class="chunk-toggle btn-link">▼</button>`;
+
+  const body = document.createElement('div');
+  body.className = 'chunk-body hidden';
+  body.id = `chunk-body-${ci}`;
+  renderChunkStudy(body, chunk, ci);
+
+  block.appendChild(hdr);
+  block.appendChild(body);
+
+  const toggleBtn = hdr.querySelector('.chunk-toggle');
+  const toggle = (e) => {
+    if (e) e.stopPropagation();
+    const open = !body.classList.contains('hidden');
+    body.classList.toggle('hidden', open);
+    toggleBtn.textContent = open ? '▼' : '▲';
+  };
+  toggleBtn.addEventListener('click', toggle);
+  hdr.addEventListener('click', toggle);
+  return block;
+}
+
+function renderChunkStudy(container, chunk, ci) {
+  if (!chunkSubTab[ci]) chunkSubTab[ci] = 'passive';
+
+  const tabBar = document.createElement('div');
+  tabBar.className = 'chunk-tabs';
+  const subTabs = [
+    { key: 'vocab',   label: '📚 Kelimeler' },
+    { key: 'passive', label: '🔈 Pasif' },
+    { key: 'active',  label: '✍️ Aktif' },
+  ];
+
+  const contentArea = document.createElement('div');
+  contentArea.className = 'chunk-tab-content';
+
+  subTabs.forEach(({ key, label }) => {
+    const btn = document.createElement('button');
+    btn.className = `chunk-tab-btn ${chunkSubTab[ci] === key ? 'active' : ''}`;
+    btn.textContent = label;
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const open = !body.classList.contains('hidden');
-      body.classList.toggle('hidden', open);
-      toggleBtn.textContent = open ? '▼' : '▲';
+      chunkSubTab[ci] = key;
+      tabBar.querySelectorAll('.chunk-tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+      renderChunkTabContent(contentArea, chunk, ci, key);
     });
+    tabBar.appendChild(btn);
+  });
 
-    // Click header to toggle
-    block.querySelector('.chunk-header').addEventListener('click', () => {
-      toggleBtn.click();
+  container.appendChild(tabBar);
+  container.appendChild(contentArea);
+  renderChunkTabContent(contentArea, chunk, ci, chunkSubTab[ci]);
+}
+
+function renderChunkTabContent(container, chunk, ci, tab) {
+  container.innerHTML = '';
+  if (tab === 'vocab')   renderChunkVocab(container, chunk);
+  if (tab === 'passive') renderChunkPassive(container, chunk, ci);
+  if (tab === 'active')  renderChunkActive(container, chunk, ci);
+}
+
+// ── Chunk: Vocabulary ─────────────────────────────────────────────────────────
+
+function renderChunkVocab(container, chunk) {
+  const studyList = getStudyList();
+  const textDiv = document.createElement('div');
+  textDiv.className = 'chunk-vocab-text';
+
+  chunk.text.split(/([^a-zA-Z']+)/).forEach(tok => {
+    if (!tok) return;
+    const clean = tok.toLowerCase().replace(/[^a-z]/g, '');
+    const level = clean.length >= 3 ? CEFR_LEVELS.getLevel(clean) : null;
+    if (!level || /^[^a-zA-Z]+$/.test(tok)) {
+      textDiv.appendChild(document.createTextNode(tok)); return;
+    }
+    const color = CEFR_LEVELS.COLORS[level] || '#aaa';
+    const span = document.createElement('span');
+    span.textContent = tok;
+    span.className = `vocab-word ${studyList[clean] ? 'in-study' : ''}`;
+    span.dataset.word = clean;
+    span.style.color = color;
+    span.style.borderBottom = `2px solid ${color}`;
+    span.addEventListener('click', () => {
+      toggleStudyWord(clean, level, chunk.text);
+      span.classList.toggle('in-study', !!getStudyList()[clean]);
     });
+    textDiv.appendChild(span);
+  });
+  container.appendChild(textDiv);
+}
+
+// ── Chunk: Passive listening ──────────────────────────────────────────────────
+
+function renderChunkPassive(container, chunk, ci) {
+  const passive = chunk.passive || [false, false, false];
+  const done = sessionsDone(passive);
+  const wrap = document.createElement('div');
+  wrap.className = 'chunk-passive-wrap';
+  wrap.innerHTML = `
+    <p class="listen-instruction">Bu 5dk parçayı <strong>${PASSIVE_SESSIONS} kez pasif dinleyin</strong>.</p>
+    <div class="session-dots"></div>
+    <div class="listen-progress-text">${done}/${PASSIVE_SESSIONS} tamamlandı ${done >= PASSIVE_SESSIONS ? '✅' : ''}</div>`;
+  container.appendChild(wrap);
+  wrap.querySelector('.session-dots') && passive.forEach((isDone, si) => {
+    const btn = document.createElement('button');
+    btn.className = `session-dot ${isDone ? 'done' : ''}`;
+    btn.innerHTML = isDone ? '✅' : `${si + 1}. Dinleme`;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const c = allTalks[currentSlug].listening.chunks[ci];
+      if (!c.passive) c.passive = [false, false, false];
+      c.passive[si] = !isDone;
+      chrome.storage.local.set({ talks: allTalks }, buildListeningView);
+    });
+    wrap.querySelector('.session-dots').appendChild(btn);
+  });
+}
+
+// ── Chunk: Active listening ───────────────────────────────────────────────────
+
+function renderChunkActive(container, chunk, ci) {
+  initChunkActive(chunk);
+  const activeData = chunk.active;
+  const doneCount = activeData.sessions.filter(s => s.done).length;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'active-session-header';
+  hdr.innerHTML = `<span>${ACTIVE_SESSIONS} oturum gerekli &nbsp;·&nbsp; <strong>${doneCount}/${ACTIVE_SESSIONS}</strong> tamamlandı</span>`;
+  container.appendChild(hdr);
+
+  const sessionRow = document.createElement('div');
+  sessionRow.className = 'active-session-row';
+
+  activeData.sessions.forEach((sess, si) => {
+    const isActive = alState && alState.chunkIdx === ci && alState.sessionIdx === si;
+    const pill = document.createElement('button');
+    pill.className = `session-pill ${sess.done ? 'pill-sess-done' : ''} ${isActive ? 'pill-sess-active' : ''}`;
+    pill.textContent = sess.done ? `✅ ${sess.score}/${sess.total}` : `${si + 1}. Oturum`;
+    pill.title = sess.done ? 'Tekrar yapmak için tıkla' : 'Bu oturumu başlat';
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      alState = { slug: currentSlug, chunkIdx: ci, sessionIdx: si, answers: {}, currentBlank: 0 };
+      // Re-render active tab
+      const body = document.getElementById(`chunk-body-${ci}`);
+      if (body) renderChunkTabContent(body.querySelector('.chunk-tab-content'), chunk, ci, 'active');
+    });
+    sessionRow.appendChild(pill);
+  });
+  container.appendChild(sessionRow);
+
+  const exerciseArea = document.createElement('div');
+  exerciseArea.className = 'active-exercise-area';
+  container.appendChild(exerciseArea);
+
+  if (alState && alState.chunkIdx === ci) {
+    renderFillInBlank(exerciseArea, chunk, ci);
+  } else {
+    exerciseArea.innerHTML = `<p class="active-start-hint">Yukarıdan bir oturum seçip başlayın.</p>`;
+  }
+}
+
+// ── Fill-in-the-blank ─────────────────────────────────────────────────────────
+
+function renderFillInBlank(container, chunk, ci) {
+  if (!alState) return;
+  const { blanks } = chunk.active;
+  const { answers, currentBlank } = alState;
+  container.innerHTML = '';
+
+  // Transcript with blank slots
+  const textDiv = document.createElement('div');
+  textDiv.className = 'fill-blank-text';
+
+  getBlankTokens(chunk.text, blanks).forEach(tok => {
+    if (!tok.isBlank) {
+      textDiv.appendChild(document.createTextNode(tok.text));
+    } else {
+      const bi = tok.blankIdx;
+      const answer = answers[bi];
+      const isCorrect = answer === blanks[bi].word;
+      const slot = document.createElement('span');
+      slot.className = [
+        'blank-slot',
+        bi === currentBlank ? 'blank-focused' : '',
+        answer ? (isCorrect ? 'blank-correct' : 'blank-wrong') : 'blank-empty',
+      ].join(' ');
+      slot.textContent = answer || `[${bi + 1}]`;
+      slot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Focus this blank (only if unanswered)
+        if (!answers[bi]) { alState.currentBlank = bi; renderFillInBlank(container, chunk, ci); }
+      });
+      textDiv.appendChild(slot);
+    }
+  });
+  container.appendChild(textDiv);
+
+  // Check if all answered
+  const unanswered = blanks.filter((_, bi) => !answers[bi]);
+  if (unanswered.length === 0) { showActiveResult(container, chunk, ci); return; }
+
+  // Word bank for current blank
+  const currBlank = blanks[currentBlank] || blanks[blanks.findIndex((_, bi) => !answers[bi])];
+  if (!currBlank) return;
+
+  const bank = document.createElement('div');
+  bank.className = 'word-bank';
+  bank.innerHTML = `<div class="word-bank-label">Boşluk [${currentBlank + 1}] için seçin:</div>`;
+  const opts = document.createElement('div');
+  opts.className = 'word-bank-options';
+  currBlank.options.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'word-bank-btn';
+    btn.textContent = opt;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      alState.answers[currentBlank] = opt;
+      // Advance to next unanswered
+      let next = blanks.findIndex((_, bi) => bi > currentBlank && !alState.answers[bi]);
+      if (next === -1) next = blanks.findIndex((_, bi) => !alState.answers[bi]);
+      if (next !== -1) alState.currentBlank = next;
+      renderFillInBlank(container, chunk, ci);
+    });
+    opts.appendChild(btn);
+  });
+  bank.appendChild(opts);
+  container.appendChild(bank);
+}
+
+function showActiveResult(container, chunk, ci) {
+  const { blanks } = chunk.active;
+  const { answers, sessionIdx } = alState;
+  const correct = blanks.filter((b, bi) => answers[bi] === b.word).length;
+  const total = blanks.length;
+  const pct = Math.round(correct / total * 100);
+  const wrongs = blanks.filter((b, bi) => answers[bi] !== b.word);
+
+  const result = document.createElement('div');
+  result.className = 'active-result';
+  result.innerHTML = `
+    <div class="result-score">
+      <span class="score-big">${pct}%</span>
+      <span class="score-sub">${correct}/${total} doğru</span>
+    </div>
+    ${wrongs.length
+      ? `<div class="wrong-list">${wrongs.map(b => {
+          const bi = blanks.indexOf(b);
+          return `<div class="wrong-item">
+            <span class="wrong-given">${answers[bi] || '—'}</span>
+            <span class="wrong-arrow">→</span>
+            <span class="wrong-correct">${b.word}</span>
+          </div>`;
+        }).join('')}</div>`
+      : `<div class="result-perfect">Mükemmel! Tüm boşluklar doğru 🎉</div>`}
+    <button class="btn-primary btn-complete-session">Oturumu Tamamla</button>`;
+  container.appendChild(result);
+
+  result.querySelector('.btn-complete-session').addEventListener('click', (e) => {
+    e.stopPropagation();
+    allTalks[currentSlug].listening.chunks[ci].active.sessions[sessionIdx] = { done: true, score: correct, total };
+    alState = null;
+    chrome.storage.local.set({ talks: allTalks }, buildListeningView);
   });
 }
 
