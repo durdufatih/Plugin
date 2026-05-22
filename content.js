@@ -44,10 +44,11 @@
 
   function getVideoMeta() {
     const url   = window.location.href.split('?')[0].replace(/\/$/, '');
+    // /transcript suffix'ini slug'dan çıkar
     const slug  = (url.split('/talks/')[1] || '').replace(/\/.*$/, '');
     const h1    = document.querySelector('h1[data-testid="talk-title"]') || document.querySelector('h1');
-    const title = h1 ? h1.textContent.trim() : document.title.replace(' | TED Talk', '').trim();
-    return { title, url, slug };
+    const title = h1 ? h1.textContent.trim() : document.title.replace(' | TED', '').replace('Transcript: ', '').trim();
+    return { title, url: `https://www.ted.com/talks/${slug}`, slug };
   }
 
   // Yöntem 1: __NEXT_DATA__ (TED Next.js uygulaması — en güvenilir)
@@ -150,6 +151,20 @@
       .filter(el => (el.getAttribute('aria-label') || '').length > 15);
     if (cueDivs.length >= 3) {
       return cueDivs.map(el => el.getAttribute('aria-label').trim()).join(' ');
+    }
+
+    // ── /transcript sayfası: tüm inline cue divsları (panel dışındakiler de dahil) ──
+    const allCueDivs = [...document.querySelectorAll('div[role="button"][aria-label]')]
+      .filter(el => (el.getAttribute('aria-label') || '').length > 15);
+    if (allCueDivs.length >= 5) {
+      return allCueDivs.map(el => el.getAttribute('aria-label').trim()).join(' ');
+    }
+
+    // Tüm span[dir="ltr"] (buton dışı)
+    const allDirSpans = [...document.querySelectorAll('span[dir="ltr"]')]
+      .filter(s => s.textContent.trim().length > 10 && !s.closest('button'));
+    if (allDirSpans.length >= 5) {
+      return allDirSpans.map(s => s.textContent.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' ');
     }
 
     // ── Eski TED yapıları ──

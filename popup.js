@@ -1510,41 +1510,86 @@ async function fetchFromUrl() {
   if (!slug) { setFetchStatus('Geçerli bir TED linki değil.', 'error'); return; }
   if (allTalks[slug]) { setFetchStatus('Bu konuşma zaten kayıtlı.', 'info'); showDetail(slug); return; }
 
-  // Önce aktif sekme TED konuşması mı diye bak
+  $('btn-fetch-url').disabled = true;
+  setFetchStatus('⏳ Transkript sayfası açılıyor, otomatik çekiliyor…', 'info');
+
+  // Önce aktif sekme doğru TED sayfasında mı (hem /talks/SLUG hem /transcript kabul)
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     const tab = tabs[0];
     const tabSlug = tab && tab.url ? parseTedSlug(tab.url) : null;
 
     if (tabSlug && tabSlug === slug) {
-      // Aktif sekme zaten doğru konuşma — content script'ten çek
-      $('btn-fetch-url').disabled = true;
-      setFetchStatus('⏳ Sayfadan çekiliyor…', 'info');
+      // Aktif sekme zaten doğru konuşma — content script'ten direkt çek
       chrome.tabs.sendMessage(tab.id, { type: 'GET_TRANSCRIPT' }, response => {
-        $('btn-fetch-url').disabled = false;
         if (chrome.runtime.lastError || !response?.ok) {
-          setFetchStatus('❌ ' + (response?.error || 'Sayfa henüz hazır değil, yenileyin.'), 'error');
+          // Aktif sekme başarısız → arka plan sekmesiyle otomatik dene
+          autoFetchViaBackground(slug);
           return;
         }
-        const { transcript, meta } = response;
-        const record = {
-          id: slug, title: meta.title,
-          url: `https://www.ted.com/talks/${slug}`,
-          transcript, savedAt: new Date().toISOString(),
-          progress: 0, notes: '', studyList: {},
-        };
-        allTalks[slug] = record;
-        chrome.storage.local.set({ talks: allTalks }, () => {
-          $('url-input').value = '';
-          $('fetch-status').classList.add('hidden');
-          renderList(); showDetail(slug);
-        });
+        saveFetchedTalk(slug, response.transcript, response.meta);
       });
     } else {
-      // Farklı sekme — TED sayfasını aç, kullanıcı oradan kaydetsin
-      chrome.tabs.create({ url: `https://www.ted.com/talks/${slug}` });
-      $('url-input').value = '';
-      setFetchStatus('✅ TED sayfası açıldı. Yüklenince "📋 Transkripti Kaydet" butonuna basın.', 'info');
+      // Arka plan sekmesiyle otomatik çek
+      autoFetchViaBackground(slug);
     }
+  });
+}
+
+function autoFetchViaBackground(slug) {
+  // background.js'e mesaj gönder — /transcript URL'sini arka planda açsın
+  chrome.runtime.sendMessage({ type: 'FETCH_TRANSCRIPT_AUTO', slug }, () => {
+    setFetchStatus('⏳ /transcript sayfası arka planda açıldı, çekiliyor…', 'info');
+  });
+
+  // storage.onChanged ile sonucu bekle
+  const onStorageChange = (changes) => {
+    if (changes.talks?.newValue?.[slug]) {
+      chrome.storage.onChanged.removeListener(onStorageChange);
+      allTalks = changes.talks.newValue;
+      $('btn-fetch-url').disabled = false;
+      $('url-input').value = '';
+      renderList();
+      showDetail(slug);
+      setFetchStatus('✅ Transkript kaydedildi!', 'success');
+    }
+    if (changes.pending_fetch_error?.newValue?.[slug]) {
+      chrome.storage.onChanged.removeListener(onStorageChange);
+      $('btn-fetch-url').disabled = false;
+      const msg = changes.pending_fetch_error.newValue[slug];
+      setFetchStatus('❌ ' + msg, 'error');
+      // Hata kaydını temizle
+      chrome.storage.local.get(['pending_fetch_error'], d => {
+        const errs = d.pending_fetch_error || {};
+        delete errs[slug];
+        chrome.storage.local.set({ pending_fetch_error: errs });
+      });
+    }
+  };
+  chrome.storage.onChanged.addListener(onStorageChange);
+
+  // 60 saniye sonra timeout
+  setTimeout(() => {
+    chrome.storage.onChanged.removeListener(onStorageChange);
+    if (!allTalks[slug]) {
+      $('btn-fetch-url').disabled = false;
+      setFetchStatus('❌ Zaman aşımı. TED sayfasını açıp "📋 Transkripti Kaydet" butonuna basın.', 'error');
+    }
+  }, 60000);
+}
+
+function saveFetchedTalk(slug, transcript, meta) {
+  const record = {
+    id: slug, title: meta?.title || slug,
+    url: `https://www.ted.com/talks/${slug}`,
+    transcript, savedAt: new Date().toISOString(),
+    progress: 0, notes: '', studyList: {},
+  };
+  allTalks[slug] = record;
+  chrome.storage.local.set({ talks: allTalks }, () => {
+    $('btn-fetch-url').disabled = false;
+    $('url-input').value = '';
+    $('fetch-status').classList.add('hidden');
+    renderList(); showDetail(slug);
   });
 }
 
