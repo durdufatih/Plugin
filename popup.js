@@ -79,40 +79,6 @@ function parseTedSlug(raw) {
   } catch { return null; }
 }
 
-async function fetchTranscriptForSlug(slug) {
-  const res = await fetch(`https://www.ted.com/talks/${slug}/transcript`);
-  if (!res.ok) throw new Error(`Transkript alınamadı (${res.status})`);
-  const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-
-  const selectors = [
-    '[data-testid="transcript-line"]',
-    '.Grid__cell--verticalAlignTop .Paragraph',
-    '.talk-transcript__para__text',
-    '.transcript__para__text',
-    '[class*="transcript"] p',
-  ];
-
-  let paragraphs = [];
-  for (const sel of selectors) {
-    paragraphs = [...doc.querySelectorAll(sel)];
-    if (paragraphs.length) break;
-  }
-  if (!paragraphs.length) {
-    const main = doc.querySelector('main') || doc.body;
-    paragraphs = [...main.querySelectorAll('p')].filter(p => p.textContent.trim().length > 30);
-  }
-  if (!paragraphs.length) throw new Error('Transkript metni bulunamadı');
-  return paragraphs.map(p => p.textContent.trim()).join('\n\n');
-}
-
-async function fetchTalkTitle(slug) {
-  try {
-    const res = await fetch(`https://www.ted.com/talks/${slug}`);
-    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-    const h1 = doc.querySelector('h1[data-testid="talk-title"]') || doc.querySelector('h1');
-    return h1 ? h1.textContent.trim() : slug;
-  } catch { return slug; }
-}
 
 // ── Fetch status ──────────────────────────────────────────────────────────────
 
@@ -1544,32 +1510,42 @@ async function fetchFromUrl() {
   if (!slug) { setFetchStatus('Geçerli bir TED linki değil.', 'error'); return; }
   if (allTalks[slug]) { setFetchStatus('Bu konuşma zaten kayıtlı.', 'info'); showDetail(slug); return; }
 
-  $('btn-fetch-url').disabled = true;
-  setFetchStatus('⏳ Transkript çekiliyor…', 'info');
-  try {
-    const [transcript, title] = await Promise.all([
-      fetchTranscriptForSlug(slug),
-      fetchTalkTitle(slug),
-    ]);
-    const record = {
-      id: slug, title,
-      url: `https://www.ted.com/talks/${slug}`,
-      transcript,
-      savedAt: new Date().toISOString(),
-      progress: 0, notes: '', studyList: {},
-    };
-    allTalks[slug] = record;
-    chrome.storage.local.set({ talks: allTalks }, () => {
+  // Önce aktif sekme TED konuşması mı diye bak
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    const tab = tabs[0];
+    const tabSlug = tab && tab.url ? parseTedSlug(tab.url) : null;
+
+    if (tabSlug && tabSlug === slug) {
+      // Aktif sekme zaten doğru konuşma — content script'ten çek
+      $('btn-fetch-url').disabled = true;
+      setFetchStatus('⏳ Sayfadan çekiliyor…', 'info');
+      chrome.tabs.sendMessage(tab.id, { type: 'GET_TRANSCRIPT' }, response => {
+        $('btn-fetch-url').disabled = false;
+        if (chrome.runtime.lastError || !response?.ok) {
+          setFetchStatus('❌ ' + (response?.error || 'Sayfa henüz hazır değil, yenileyin.'), 'error');
+          return;
+        }
+        const { transcript, meta } = response;
+        const record = {
+          id: slug, title: meta.title,
+          url: `https://www.ted.com/talks/${slug}`,
+          transcript, savedAt: new Date().toISOString(),
+          progress: 0, notes: '', studyList: {},
+        };
+        allTalks[slug] = record;
+        chrome.storage.local.set({ talks: allTalks }, () => {
+          $('url-input').value = '';
+          $('fetch-status').classList.add('hidden');
+          renderList(); showDetail(slug);
+        });
+      });
+    } else {
+      // Farklı sekme — TED sayfasını aç, kullanıcı oradan kaydetsin
+      chrome.tabs.create({ url: `https://www.ted.com/talks/${slug}` });
       $('url-input').value = '';
-      $('fetch-status').classList.add('hidden');
-      renderList();
-      showDetail(slug);
-    });
-  } catch (err) {
-    setFetchStatus('❌ ' + err.message, 'error');
-  } finally {
-    $('btn-fetch-url').disabled = false;
-  }
+      setFetchStatus('✅ TED sayfası açıldı. Yüklenince "📋 Transkripti Kaydet" butonuna basın.', 'info');
+    }
+  });
 }
 
 // ── List ──────────────────────────────────────────────────────────────────────

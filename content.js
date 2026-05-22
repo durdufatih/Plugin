@@ -6,7 +6,6 @@
 
   // ── Altyazı gizleme butonu ─────────────────────────────────────────────────
   let subsHidden = false;
-  const subStyleId = 'ted-sub-hide-style';
 
   function injectSubtitleToggle() {
     if (document.getElementById('ted-sub-btn')) return;
@@ -21,24 +20,19 @@
     `;
     btn.addEventListener('click', () => {
       subsHidden = !subsHidden;
-      // 1. Video text tracks
       const video = document.querySelector('video');
-      if (video) {
-        [...video.textTracks].forEach(t => { t.mode = subsHidden ? 'hidden' : 'showing'; });
-      }
-      // 2. CSS overlay approach (covers multiple TED player versions)
-      let styleEl = document.getElementById(subStyleId);
+      if (video) [...video.textTracks].forEach(t => { t.mode = subsHidden ? 'hidden' : 'showing'; });
+      let styleEl = document.getElementById('ted-sub-style');
       if (!styleEl) {
         styleEl = document.createElement('style');
-        styleEl.id = subStyleId;
+        styleEl.id = 'ted-sub-style';
         document.head.appendChild(styleEl);
       }
       styleEl.textContent = subsHidden ? `
-        [class*="subtitle"], [class*="caption"], [class*="transcript-overlay"],
-        [class*="tjs-"], [data-testid*="caption"], [data-testid*="subtitle"],
-        .tlc, .tls, [class*="PlayerSubtitle"], [class*="player-subtitle"] {
-          display: none !important;
-          visibility: hidden !important;
+        [class*="subtitle"],[class*="caption"],[class*="transcript-overlay"],
+        [class*="tjs-"],[data-testid*="caption"],[data-testid*="subtitle"],
+        .tlc,.tls,[class*="PlayerSubtitle"],[class*="player-subtitle"]{
+          display:none!important;visibility:hidden!important;
         }` : '';
       btn.textContent = subsHidden ? '👁 Altyazı: KAPALI' : '👁 Altyazı: AÇIK';
       btn.style.background = subsHidden ? '#e62b1e' : '#1a1a1a';
@@ -46,124 +40,207 @@
     document.body.appendChild(btn);
   }
 
-  injectSubtitleToggle();
+  // ── Transkript çıkarma ─────────────────────────────────────────────────────
 
   function getVideoMeta() {
-    const titleEl =
-      document.querySelector('h1[data-testid="talk-title"]') ||
-      document.querySelector('h1.f:first-of-type') ||
-      document.querySelector('h1');
-    const title = titleEl ? titleEl.textContent.trim() : document.title;
-    const url = window.location.href.split('?')[0].replace(/\/$/, '');
-    const slug = url.split('/talks/')[1] || '';
+    const url   = window.location.href.split('?')[0].replace(/\/$/, '');
+    const slug  = (url.split('/talks/')[1] || '').replace(/\/.*$/, '');
+    const h1    = document.querySelector('h1[data-testid="talk-title"]') || document.querySelector('h1');
+    const title = h1 ? h1.textContent.trim() : document.title.replace(' | TED Talk', '').trim();
     return { title, url, slug };
   }
 
-  async function fetchTranscript(slug) {
-    const transcriptUrl = `https://www.ted.com/talks/${slug}/transcript`;
-    const res = await fetch(transcriptUrl);
-    if (!res.ok) throw new Error('Transkript sayfası alınamadı');
-    const html = await res.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
+  // Yöntem 1: __NEXT_DATA__ (TED Next.js uygulaması — en güvenilir)
+  function extractFromNextData() {
+    try {
+      const nd = window.__NEXT_DATA__;
+      if (!nd) return null;
+      const pp = nd.props?.pageProps;
+      if (!pp) return null;
 
-    // TED transkript paragrafları
-    const selectors = [
-      '[data-testid="transcript-line"]',
-      '.Grid__cell--verticalAlignTop .Paragraph',
-      '.talk-transcript__para__text',
-      '.transcript__para__text',
-    ];
+      // Bilinen yollar
+      const directPaths = [
+        pp?.transcriptData?.paragraphs,
+        pp?.videoData?.transcript?.paragraphs,
+        pp?.talk?.transcript?.paragraphs,
+        pp?.serverProps?.transcriptData?.paragraphs,
+      ];
+      for (const arr of directPaths) {
+        const text = paragraphsToText(arr);
+        if (text) return text;
+      }
 
-    let paragraphs = [];
-    for (const sel of selectors) {
-      paragraphs = [...doc.querySelectorAll(sel)];
-      if (paragraphs.length > 0) break;
+      // playerData (JSON string olarak gömülü olabilir)
+      const rawPD = pp?.videoData?.playerData || pp?.talk?.playerData;
+      if (rawPD) {
+        const pd = typeof rawPD === 'string' ? JSON.parse(rawPD) : rawPD;
+        // Önce captions/paragraphs
+        const langObj = pd?.languages?.en || pd?.languages?.['en-us']
+          || (pd?.languages && Object.values(pd.languages)[0]);
+        const paras = langObj?.translation?.paragraphs || langObj?.paragraphs;
+        const text = paragraphsToText(paras);
+        if (text) return text;
+
+        // Cue tabanlı yapı
+        if (Array.isArray(paras)) {
+          const cueText = paras
+            .flatMap(p => p.cues || [])
+            .map(c => c.text || '')
+            .filter(Boolean)
+            .join(' ');
+          if (cueText.length > 100) return cueText;
+        }
+      }
+
+      // Derin arama — paragraf dizisi içeren herhangi bir alan
+      return deepSearchParagraphs(pp, 0);
+    } catch (e) {
+      return null;
     }
-
-    if (paragraphs.length === 0) {
-      // fallback: <p> içindeki metinleri al
-      const main = doc.querySelector('main') || doc.body;
-      paragraphs = [...main.querySelectorAll('p')].filter(
-        (p) => p.textContent.trim().length > 30
-      );
-    }
-
-    return paragraphs.map((p) => p.textContent.trim()).join('\n\n');
   }
 
-  function injectButton() {
+  function paragraphsToText(arr) {
+    if (!Array.isArray(arr) || arr.length < 3) return null;
+    const texts = arr.map(p => p.text || p.cue || p.transcript || '').filter(t => t.length > 5);
+    if (texts.length < 3) return null;
+    return texts.join('\n\n');
+  }
+
+  function deepSearchParagraphs(obj, depth) {
+    if (depth > 7 || !obj || typeof obj !== 'object') return null;
+    if (Array.isArray(obj) && obj.length >= 5) {
+      const sample = obj[0];
+      if (sample && typeof sample === 'object' && (sample.text || sample.cue)) {
+        const texts = obj.map(p => p.text || p.cue || '').filter(t => t.length > 10);
+        if (texts.length >= 5) return texts.join('\n\n');
+      }
+    }
+    // Öncelikli anahtarlar
+    for (const key of ['transcript', 'paragraphs', 'captions', 'cues', 'subtitles', 'translation']) {
+      if (obj[key]) {
+        const r = deepSearchParagraphs(obj[key], depth + 1);
+        if (r) return r;
+      }
+    }
+    for (const val of Object.values(obj)) {
+      const r = deepSearchParagraphs(val, depth + 1);
+      if (r) return r;
+    }
+    return null;
+  }
+
+  // Yöntem 2: Sayfada görünen DOM elemanları
+  function extractFromDom() {
+    const selectors = [
+      '[data-testid="transcript-line"]',
+      '[data-testid="transcript-paragraph"]',
+      '.talk-transcript__para__text',
+      '.transcript__para__text',
+      '[class*="Transcript__ParaText"]',
+      '[class*="transcript-para"]',
+    ];
+    for (const sel of selectors) {
+      const els = [...document.querySelectorAll(sel)];
+      if (els.length >= 3) return els.map(e => e.textContent.trim()).filter(Boolean).join('\n\n');
+    }
+    return null;
+  }
+
+  // Yöntem 3: "Transcript" sekmesine tıkla, yüklenmesini bekle
+  async function triggerTranscriptTab() {
+    const triggerEls = [...document.querySelectorAll('button,[role="tab"],[role="button"]')]
+      .filter(el => /transcript/i.test(el.textContent || el.getAttribute('aria-label') || ''));
+    if (!triggerEls.length) return null;
+    triggerEls[0].click();
+    for (let i = 0; i < 15; i++) {
+      await delay(300);
+      const text = extractFromDom();
+      if (text) return text;
+    }
+    return null;
+  }
+
+  function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function extractTranscript() {
+    // 1. __NEXT_DATA__ — sayfa yüklenirken zaten hazır
+    let text = extractFromNextData();
+    if (text && text.length > 100) return text;
+
+    // 2. DOM'dan — transkript bölümü zaten açıksa
+    text = extractFromDom();
+    if (text && text.length > 100) return text;
+
+    // 3. Transkript sekmesini aç ve bekle
+    text = await triggerTranscriptTab();
+    if (text && text.length > 100) return text;
+
+    throw new Error('Transkript bulunamadı. Sayfayı yenileyin veya "Transcript" bölümünü kendiniz açın.');
+  }
+
+  // ── Popup mesajlarını dinle ───────────────────────────────────────────────
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.type === 'GET_TRANSCRIPT') {
+      const meta = getVideoMeta();
+      extractTranscript()
+        .then(transcript => sendResponse({ ok: true, transcript, meta }))
+        .catch(err   => sendResponse({ ok: false, error: err.message }));
+      return true; // async response
+    }
+    if (msg.type === 'PING') {
+      sendResponse({ ok: true, meta: getVideoMeta() });
+      return true;
+    }
+  });
+
+  // ── Kaydet butonu ─────────────────────────────────────────────────────────
+  function injectSaveButton() {
     const btn = document.createElement('button');
     btn.id = 'ted-tracker-btn';
     btn.textContent = '📋 Transkripti Kaydet';
     btn.style.cssText = `
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      z-index: 999999;
-      background: #e62b1e;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 12px 18px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
-      transition: background 0.2s;
+      position: fixed; bottom: 24px; right: 24px; z-index: 999999;
+      background: #e62b1e; color: #fff; border: none; border-radius: 8px;
+      padding: 12px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,.25); transition: background .2s;
     `;
-
     btn.addEventListener('mouseenter', () => (btn.style.background = '#c0231a'));
     btn.addEventListener('mouseleave', () => (btn.style.background = '#e62b1e'));
 
     btn.addEventListener('click', async () => {
-      btn.textContent = '⏳ Yükleniyor...';
+      btn.textContent = '⏳ Çekiliyor…';
       btn.disabled = true;
       try {
         const meta = getVideoMeta();
         if (!meta.slug) throw new Error('TED konuşma adresi tanınamadı');
-
-        const transcript = await fetchTranscript(meta.slug);
-        if (!transcript) throw new Error('Transkript bulunamadı');
+        const transcript = await extractTranscript();
 
         const record = {
-          id: meta.slug,
-          title: meta.title,
-          url: meta.url,
-          transcript,
-          savedAt: new Date().toISOString(),
-          progress: 0,
-          notes: '',
-          studyList: {},
+          id: meta.slug, title: meta.title, url: meta.url,
+          transcript, savedAt: new Date().toISOString(),
+          progress: 0, notes: '', studyList: {},
         };
-
-        chrome.storage.local.get(['talks'], (data) => {
+        chrome.storage.local.get(['talks'], data => {
           const talks = data.talks || {};
           talks[meta.slug] = record;
           chrome.storage.local.set({ talks }, () => {
             btn.textContent = '✅ Kaydedildi!';
-            setTimeout(() => {
-              btn.textContent = '📋 Transkripti Kaydet';
-              btn.disabled = false;
-            }, 2000);
+            setTimeout(() => { btn.textContent = '📋 Transkripti Kaydet'; btn.disabled = false; }, 2000);
           });
         });
       } catch (err) {
-        btn.textContent = '❌ Hata: ' + err.message;
-        setTimeout(() => {
-          btn.textContent = '📋 Transkripti Kaydet';
-          btn.disabled = false;
-        }, 3000);
+        btn.textContent = '❌ ' + err.message;
+        setTimeout(() => { btn.textContent = '📋 Transkripti Kaydet'; btn.disabled = false; }, 4000);
       }
     });
 
     document.body.appendChild(btn);
   }
 
-  // Sayfa yüklenince butonu ekle
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectButton);
+    document.addEventListener('DOMContentLoaded', () => { injectSubtitleToggle(); injectSaveButton(); });
   } else {
-    injectButton();
+    injectSubtitleToggle();
+    injectSaveButton();
   }
 })();
